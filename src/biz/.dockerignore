@@ -1,0 +1,33 @@
+# Docker 构建时忽略的文件
+# 减少构建上下文大小，加快构建速度
+
+# Python 相关
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# 测试相关
+test_results/
+*.log
+
+# 其他
+.git/
+.gitignore
+*.md
+!DOCKER_TEST_README.md
+!LOAD_3DM_README.md
+
+# 大文件
+*.tar.gz
+*.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  test-3dm-loader:
+    build:
+      context: .
+      dockerfile: Dockerfile.test_3dm
+    image: test-3dm-loader:latest
+    container_name: test-3dm-loader
+    volumes:
+      # 挂载 testcases 目录到容器内
+      - ./testcases:/app/testcases:ro
+    # 运行测试脚本
+    command: ["python", "test_3dm_files.py", "/app/testcases"]
+    # 确保容器在测试完成后退出
+    restart: "no"

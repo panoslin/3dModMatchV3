@@ -1,0 +1,39 @@
+# 最小化的 Dockerfile 用于测试 load_3dm.py 脚本
+# 验证脚本能否正确读取 testcases/ 目录下的所有 3dm 文件
+
+FROM python:3.10-slim
+
+# 设置工作目录
+WORKDIR /app
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 安装系统依赖（最小化）
+# 注意：某些 Python 包可能需要编译工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# 安装 Python 依赖
+# 只安装必要的依赖：rhino3dm 和 numpy
+RUN pip install --no-cache-dir \
+    rhino3dm==8.17.0 \
+    numpy==1.26.4
+
+# 复制脚本文件
+COPY load_3dm.py /app/
+COPY test_3dm_files.py /app/
+
+# 设置 testcases 目录（将通过 volume 挂载）
+# 注意：testcases 目录在运行时通过 docker-compose 或 -v 挂载
+VOLUME ["/app/testcases"]
+
+# 运行测试脚本
+# 默认测试 /app/testcases 目录
+CMD ["python", "test_3dm_files.py", "/app/testcases"]
