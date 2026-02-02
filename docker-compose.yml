@@ -1,0 +1,41 @@
+services:
+  web-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: 3dm-matcher:latest
+    container_name: 3dm-web-viewer
+    ports:
+      - "5001:5000"
+    volumes:
+      # 挂载 testcases 目录到容器内（可选，用于测试）
+      - ./testcases:/app/testcases:ro
+    # 启动网页查看器
+    command: ["python", "src/viz/web_viewer.py"]
+    restart: unless-stopped
+    environment:
+      - PYTHONPATH=/app
+      - FLASK_ENV=production
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  test-3dm-loader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: 3dm-matcher:latest
+    container_name: test-3dm-loader
+    volumes:
+      # 挂载 testcases 目录到容器内
+      - ./testcases:/app/testcases:ro
+    # 运行测试脚本（可以在运行时覆盖）
+    # 例如运行匹配测试: docker-compose run --rm test-3dm-loader python src/biz/test_matching.py /app/testcases
+    command: ["python", "src/biz/test_matching.py", "/app/testcases", "--output", "/app/test_report.json"]
+    # 确保容器在测试完成后退出
+    restart: "no"
+    environment:
+      - PYTHONPATH=/app

@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3DM 文件查看器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            display: flex;
+            height: calc(100vh - 200px);
+            min-height: 600px;
+        }
+
+        .sidebar {
+            width: 350px;
+            background: #f8f9fa;
+            padding: 25px;
+            overflow-y: auto;
+            border-right: 1px solid #e0e0e0;
+        }
+
+        .viewer-container {
+            flex: 1;
+            position: relative;
+            background: #1a1a1a;
+        }
+
+        #viewer {
+            width: 100%;
+            height: 100%;
+        }
+
+        .upload-section {
+            margin-bottom: 30px;
+        }
+
+        .upload-section h2 {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            margin-bottom: 15px;
+        }
+
+        .file-input-label {
+            display: block;
+            padding: 15px;
+            background: white;
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .file-input-label:hover {
+            background: #f0f0ff;
+            border-color: #764ba2;
+        }
+
+        .file-input-label.dragover {
+            background: #e8e8ff;
+            border-color: #764ba2;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .mesh-quality {
+            margin-bottom: 20px;
+        }
+
+        .mesh-quality label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        .mesh-quality select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+        }
+
+        .info-section {
+            margin-top: 30px;
+        }
+
+        .info-section h3 {
+            font-size: 1.1em;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .info-item {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+
+        .info-item strong {
+            color: #667eea;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .info-item span {
+            color: #666;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            border-left: 4px solid #c33;
+            display: none;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            z-index: 100;
+        }
+
+        .controls h4 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .controls p {
+            font-size: 0.9em;
+            color: #666;
+            margin: 5px 0;
+        }
+
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #999;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔷 3DM 文件查看器</h1>
+            <p>上传并交互式查看 Rhino 3DM 文件</p>
+            <div style="margin-top: 15px;">
+                <button id="viewModeBtn" class="btn" style="width: auto; margin: 0 5px; padding: 8px 15px;">查看模式</button>
+                <button id="matchModeBtn" class="btn" style="width: auto; margin: 0 5px; padding: 8px 15px; background: #ccc;">匹配模式</button>
+            </div>
+        </div>
+        
+        <div class="content">
+            <div class="sidebar">
+                <!-- 查看模式 -->
+                <div class="upload-section" id="viewModeSection">
+                    <h2>📁 上传文件</h2>
+                    <div class="file-input-wrapper">
+                        <label for="fileInput" class="file-input-label" id="fileLabel">
+                            <span id="fileLabelText">点击或拖拽文件到此处</span>
+                        </label>
+                        <input type="file" id="fileInput" accept=".3dm">
+                    </div>
+                    
+                    <div class="mesh-quality">
+                        <label for="meshQuality">网格质量：</label>
+                        <select id="meshQuality">
+                            <option value="low">低 (快速)</option>
+                            <option value="medium" selected>中 (推荐)</option>
+                            <option value="high">高 (精细)</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn" id="loadBtn" disabled>加载模型</button>
+                    
+                    <div class="loading" id="loading">
+                        <div class="spinner"></div>
+                        <p>正在处理文件...</p>
+                    </div>
+                    
+                    <div class="error" id="error"></div>
+                </div>
+                
+                <!-- 匹配模式 -->
+                <div class="upload-section" id="matchModeSection" style="display: none;">
+                    <h2>🔗 匹配模式</h2>
+                    <p style="font-size: 0.9em; color: #666; margin-bottom: 15px;">
+                        上传鞋模（目标）和粗胚（候选）进行匹配
+                    </p>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">鞋模（目标）:</label>
+                        <div class="file-input-wrapper">
+                            <label for="targetFileInput" class="file-input-label">
+                                <span id="targetFileLabel">点击或拖拽鞋模文件</span>
+                            </label>
+                            <input type="file" id="targetFileInput" accept=".3dm">
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <label style="display: block; margin-bottom: 5px; font-weight: 500;">粗胚（候选）:</label>
+                        <div class="file-input-wrapper">
+                            <label for="candidateFileInput" class="file-input-label">
+                                <span id="candidateFileLabel">点击或拖拽粗胚文件</span>
+                            </label>
+                            <input type="file" id="candidateFileInput" accept=".3dm">
+                        </div>
+                    </div>
+                    
+                    <button class="btn" id="matchBtn" disabled>执行匹配</button>
+                    
+                    <div class="loading" id="matchLoading">
+                        <div class="spinner"></div>
+                        <p>正在匹配...</p>
+                    </div>
+                    
+                    <div class="error" id="matchError"></div>
+                </div>
+                
+                <div class="info-section" id="infoSection" style="display: none;">
+                    <h3>📊 文件信息</h3>
+                    <div id="infoContent"></div>
+                </div>
+            </div>
+            
+            <div class="viewer-container">
+                <div id="viewer"></div>
+                <div class="controls">
+                    <h4>🖱️ 控制说明</h4>
+                    <p>左键拖拽：旋转</p>
+                    <p>右键拖拽：平移</p>
+                    <p>滚轮：缩放</p>
+                    <div id="axisControls" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+                        <h4 style="margin-bottom: 10px;">📏 中线显示</h4>
+                        <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
+                            <input type="checkbox" id="showTargetAxis" checked style="margin-right: 8px;">
+                            <span>鞋模中线 (红色)</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="showCandidateAxis" checked style="margin-right: 8px;">
+                            <span>粗胚中线 (绿色)</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="empty-state" id="emptyState">
+                    请上传 3DM 文件开始查看
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        // 全局变量
+        let scene, camera, renderer, controls;
+        let currentMesh = null;
+        let targetMesh = null;
+        let candidateMesh = null;
+        let isMatchMode = false;
+        let axisHelpers = [];  // 存储轴的可视化对象
+        let targetAxisGroup = null;  // 鞋模中线组
+        let candidateAxisGroup = null;  // 粗胚中线组
+        const viewer = document.getElementById('viewer');
+        const fileInput = document.getElementById('fileInput');
+        const fileLabel = document.getElementById('fileLabel');
+        const fileLabelText = document.getElementById('fileLabelText');
+        const loadBtn = document.getElementById('loadBtn');
+        const meshQuality = document.getElementById('meshQuality');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        const infoSection = document.getElementById('infoSection');
+        const infoContent = document.getElementById('infoContent');
+        const emptyState = document.getElementById('emptyState');
+
+        // 初始化 Three.js 场景
+        function initViewer() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            
+            camera = new THREE.PerspectiveCamera(
+                75,
+                viewer.clientWidth / viewer.clientHeight,
+                0.1,
+                10000
+            );
+            camera.position.set(0, 0, 100);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            viewer.appendChild(renderer.domElement);
+            
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // 添加光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight1.position.set(1, 1, 1);
+            scene.add(directionalLight1);
+            
+            const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+            directionalLight2.position.set(-1, -1, -1);
+            scene.add(directionalLight2);
+            
+            // 添加坐标轴辅助线
+            const axesHelper = new THREE.AxesHelper(50);
+            scene.add(axesHelper);
+            
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // 处理窗口大小变化
+        window.addEventListener('resize', () => {
+            camera.aspect = viewer.clientWidth / viewer.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(viewer.clientWidth, viewer.clientHeight);
+        });
+
+        // 文件选择处理
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                fileLabelText.textContent = e.target.files[0].name;
+                loadBtn.disabled = false;
+            }
+        });
+
+        // 拖拽处理
+        fileLabel.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileLabel.classList.add('dragover');
+        });
+
+        fileLabel.addEventListener('dragleave', () => {
+            fileLabel.classList.remove('dragover');
+        });
+
+        fileLabel.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileLabel.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].name.endsWith('.3dm')) {
+                fileInput.files = files;
+                fileLabelText.textContent = files[0].name;
+                loadBtn.disabled = false;
+            } else {
+                showError('请上传 .3dm 文件');
+            }
+        });
+
+        // 加载模型
+        loadBtn.addEventListener('click', async () => {
+            const file = fileInput.files[0];
+            if (!file) return;
+            
+            loading.classList.add('active');
+            error.classList.remove('active');
+            loadBtn.disabled = true;
+            
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('mesh_quality', meshQuality.value);
+                
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || '加载失败');
+                }
+                
+                // 显示文件信息
+                displayFileInfo(data.info, data.stats);
+                
+                // 加载模型到场景
+                loadModel(data.vertices, data.faces);
+                
+                emptyState.style.display = 'none';
+                
+            } catch (err) {
+                showError(err.message);
+            } finally {
+                loading.classList.remove('active');
+                loadBtn.disabled = false;
+            }
+        });
+
+        // 显示文件信息
+        function displayFileInfo(info, stats) {
+            infoSection.style.display = 'block';
+            infoContent.innerHTML = `
+                <div class="info-item">
+                    <strong>文件名</strong>
+                    <span>${info.file_path.split('/').pop()}</span>
+                </div>
+                <div class="info-item">
+                    <strong>文件大小</strong>
+                    <span>${(info.file_size / 1024).toFixed(2)} KB</span>
+                </div>
+                <div class="info-item">
+                    <strong>对象数量</strong>
+                    <span>${info.object_count}</span>
+                </div>
+                <div class="info-item">
+                    <strong>网格对象</strong>
+                    <span>${info.mesh_count}</span>
+                </div>
+                <div class="info-item">
+                    <strong>BREP 对象</strong>
+                    <span>${info.brep_count}</span>
+                </div>
+                <div class="info-item">
+                    <strong>顶点数</strong>
+                    <span>${stats.vertex_count.toLocaleString()}</span>
+                </div>
+                <div class="info-item">
+                    <strong>面数</strong>
+                    <span>${stats.face_count.toLocaleString()}</span>
+                </div>
+                <div class="info-item">
+                    <strong>边界范围</strong>
+                    <span>X: [${stats.bounds.x[0].toFixed(2)}, ${stats.bounds.x[1].toFixed(2)}]<br>
+                    Y: [${stats.bounds.y[0].toFixed(2)}, ${stats.bounds.y[1].toFixed(2)}]<br>
+                    Z: [${stats.bounds.z[0].toFixed(2)}, ${stats.bounds.z[1].toFixed(2)}]</span>
+                </div>
+            `;
+        }
+
+        // 加载模型到 Three.js 场景
+        function loadModel(vertices, faces) {
+            // 移除旧模型
+            if (currentMesh) {
+                scene.remove(currentMesh);
+                currentMesh.geometry.dispose();
+                currentMesh.material.dispose();
+            }
+            
+            // 创建几何体
+            const geometry = new THREE.BufferGeometry();
+            
+            // 设置顶点
+            const verticesArray = new Float32Array(vertices.flat());
+            geometry.setAttribute('position', new THREE.BufferAttribute(verticesArray, 3));
+            
+            // 设置面索引
+            const indices = new Uint32Array(faces.flat());
+            geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+            
+            // 计算法线
+            geometry.computeVertexNormals();
+            
+            // 创建材质
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x667eea,
+                shininess: 100,
+                side: THREE.DoubleSide,
+                flatShading: false
+            });
+            
+            // 创建网格
+            currentMesh = new THREE.Mesh(geometry, material);
+            scene.add(currentMesh);
+            
+            // 计算边界框并调整相机
+            geometry.computeBoundingBox();
+            const box = geometry.boundingBox;
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const distance = maxDim * 2;
+            
+            camera.position.set(
+                center.x + distance * 0.7,
+                center.y + distance * 0.7,
+                center.z + distance * 0.7
+            );
+            camera.lookAt(center);
+            controls.target.copy(center);
+            controls.update();
+        }
+
+        // 显示错误
+        function showError(message) {
+            error.textContent = message;
+            error.classList.add('active');
+        }
+
+        // 模式切换
+        const viewModeBtn = document.getElementById('viewModeBtn');
+        const matchModeBtn = document.getElementById('matchModeBtn');
+        const viewModeSection = document.getElementById('viewModeSection');
+        const matchModeSection = document.getElementById('matchModeSection');
+        const targetFileInput = document.getElementById('targetFileInput');
+        const candidateFileInput = document.getElementById('candidateFileInput');
+        const targetFileLabel = document.getElementById('targetFileLabel');
+        const candidateFileLabel = document.getElementById('candidateFileLabel');
+        const matchBtn = document.getElementById('matchBtn');
+        const matchLoading = document.getElementById('matchLoading');
+        const matchError = document.getElementById('matchError');
+
+        viewModeBtn.addEventListener('click', () => {
+            isMatchMode = false;
+            viewModeSection.style.display = 'block';
+            matchModeSection.style.display = 'none';
+            viewModeBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            matchModeBtn.style.background = '#ccc';
+            // 清除匹配结果
+            clearMatchResult();
+        });
+
+        matchModeBtn.addEventListener('click', () => {
+            isMatchMode = true;
+            viewModeSection.style.display = 'none';
+            matchModeSection.style.display = 'block';
+            matchModeBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            viewModeBtn.style.background = '#ccc';
+            // 清除查看模式结果
+            if (currentMesh) {
+                scene.remove(currentMesh);
+                currentMesh.geometry.dispose();
+                currentMesh.material.dispose();
+                currentMesh = null;
+            }
+        });
+
+        // 文件选择处理（匹配模式）
+        targetFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                targetFileLabel.textContent = e.target.files[0].name;
+                updateMatchButton();
+            }
+        });
+
+        candidateFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                candidateFileLabel.textContent = e.target.files[0].name;
+                updateMatchButton();
+            }
+        });
+
+        function updateMatchButton() {
+            matchBtn.disabled = !(targetFileInput.files.length > 0 && candidateFileInput.files.length > 0);
+        }
+
+        // 执行匹配
+        matchBtn.addEventListener('click', async () => {
+            const targetFile = targetFileInput.files[0];
+            const candidateFile = candidateFileInput.files[0];
+            
+            if (!targetFile || !candidateFile) return;
+            
+            matchLoading.classList.add('active');
+            matchError.classList.remove('active');
+            matchBtn.disabled = true;
+            
+            try {
+                const formData = new FormData();
+                formData.append('target_file', targetFile);
+                formData.append('candidate_file', candidateFile);
+                formData.append('mesh_quality', 'high');
+                formData.append('penetration_tolerance', '0.01');
+                formData.append('wrapping_threshold', '0.99');
+                
+                const response = await fetch('/api/match', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || '匹配失败');
+                }
+                
+                // 显示匹配结果
+                displayMatchResult(data);
+                
+                // 加载匹配后的模型（透明叠加）
+                loadMatchResult(data);
+                
+                emptyState.style.display = 'none';
+                
+            } catch (err) {
+                showMatchError(err.message);
+            } finally {
+                matchLoading.classList.remove('active');
+                matchBtn.disabled = false;
+            }
+        });
+
+        function showMatchError(message) {
+            matchError.textContent = message;
+            matchError.classList.add('active');
+        }
+
+        function displayMatchResult(data) {
+            infoSection.style.display = 'block';
+            const match = data.match_result;
+            infoContent.innerHTML = `
+                <div class="info-item">
+                    <strong>匹配结果</strong>
+                    <span>${match.is_fully_wrapped ? '✅ 完全包裹' : '❌ 不完全包裹'}</span>
+                </div>
+                <div class="info-item">
+                    <strong>包裹率</strong>
+                    <span>${(match.wrapping_ratio * 100).toFixed(2)}%</span>
+                </div>
+                <div class="info-item">
+                    <strong>体积</strong>
+                    <span>${match.volume.toFixed(2)}</span>
+                </div>
+                <div class="info-item">
+                    <strong>平移量</strong>
+                    <span>${match.optimal_translation.toFixed(4)}</span>
+                </div>
+                <div class="info-item">
+                    <strong>旋转角度</strong>
+                    <span>${match.optimal_rotation_angle_deg.toFixed(2)}°</span>
+                </div>
+                <div class="info-item">
+                    <strong>方向约束</strong>
+                    <span>${match.meets_direction_constraints ? '✅ 满足' : '❌ 不满足'}</span>
+                </div>
+                <div class="info-item">
+                    <strong>穿模检测</strong>
+                    <span>${match.has_penetration ? '❌ 有穿模' : '✅ 无穿模'}</span>
+                </div>
+            `;
+        }
+
+        function loadMatchResult(data) {
+            // 清除旧模型
+            clearMatchResult();
+            
+            // 加载目标（鞋模）- 灰色实体
+            const targetGeometry = new THREE.BufferGeometry();
+            const targetVertices = new Float32Array(data.target_vertices.flat());
+            targetGeometry.setAttribute('position', new THREE.BufferAttribute(targetVertices, 3));
+            const targetIndices = new Uint32Array(data.target_faces.flat());
+            targetGeometry.setIndex(new THREE.BufferAttribute(targetIndices, 1));
+            targetGeometry.computeVertexNormals();
+            
+            const targetMaterial = new THREE.MeshLambertMaterial({
+                color: 0x808080,  // 灰色 #808080
+                transparent: false,
+                opacity: 1.0,  // 完全不透明
+                side: THREE.DoubleSide
+            });
+            
+            targetMesh = new THREE.Mesh(targetGeometry, targetMaterial);
+            targetMesh.renderOrder = 1;  // 先渲染
+            targetMesh.material.depthWrite = true;  // 深度写入
+            scene.add(targetMesh);
+            
+            // 加载转换后的候选（粗胚）- 蓝色半透明
+            const candidateGeometry = new THREE.BufferGeometry();
+            const candidateVertices = new Float32Array(data.candidate_vertices_transformed.flat());
+            candidateGeometry.setAttribute('position', new THREE.BufferAttribute(candidateVertices, 3));
+            const candidateIndices = new Uint32Array(data.candidate_faces.flat());
+            candidateGeometry.setIndex(new THREE.BufferAttribute(candidateIndices, 1));
+            candidateGeometry.computeVertexNormals();
+            
+            const candidateMaterial = new THREE.MeshLambertMaterial({
+                color: 0x4080FF,  // 蓝色 #4080FF
+                transparent: true,
+                opacity: 0.5,  // 50% 半透明
+                side: THREE.DoubleSide
+            });
+            
+            candidateMesh = new THREE.Mesh(candidateGeometry, candidateMaterial);
+            candidateMesh.renderOrder = 2;  // 后渲染
+            candidateMesh.material.depthWrite = false;  // 避免深度冲突
+            scene.add(candidateMesh);
+            
+            // 计算边界框并调整相机
+            targetGeometry.computeBoundingBox();
+            candidateGeometry.computeBoundingBox();
+            
+            const targetBox = targetGeometry.boundingBox;
+            const candidateBox = candidateGeometry.boundingBox;
+            
+            // 合并边界框
+            const min = new THREE.Vector3(
+                Math.min(targetBox.min.x, candidateBox.min.x),
+                Math.min(targetBox.min.y, candidateBox.min.y),
+                Math.min(targetBox.min.z, candidateBox.min.z)
+            );
+            const max = new THREE.Vector3(
+                Math.max(targetBox.max.x, candidateBox.max.x),
+                Math.max(targetBox.max.y, candidateBox.max.y),
+                Math.max(targetBox.max.z, candidateBox.max.z)
+            );
+            
+            const center = new THREE.Vector3().addVectors(min, max).multiplyScalar(0.5);
+            const size = new THREE.Vector3().subVectors(max, min);
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const distance = maxDim * 2;
+            
+            camera.position.set(
+                center.x + distance * 0.7,
+                center.y + distance * 0.7,
+                center.z + distance * 0.7
+            );
+            camera.lookAt(center);
+            controls.target.copy(center);
+            controls.update();
+            
+            // 可视化轴（如果数据中有轴信息）
+            if (data.axes) {
+                visualizeAxes(data.axes, maxDim);
+            }
+        }
+        
+        // 可视化轴（使用圆柱体中线样式）
+        function visualizeAxes(axesData, axisLength) {
+            // 清除旧的轴
+            clearAxes();
+            
+            // 显示中线控制面板
+            document.getElementById('axisControls').style.display = 'block';
+            
+            // 轴的长度设置为网格最大尺寸的1.0倍（double，中线应该更长）
+            const cylinderLength = axisLength * 1.0;
+            const cylinderRadius = 1.5;  // 1.5mm 半径
+            
+            // 创建圆柱体中线辅助函数
+            function createCylinderAxis(origin, direction, color, label) {
+                const originVec = new THREE.Vector3(...origin);
+                const dirVec = new THREE.Vector3(...direction).normalize();
+                
+                // 创建圆柱体几何体（默认沿Y轴，高度为cylinderLength）
+                const geometry = new THREE.CylinderGeometry(
+                    cylinderRadius,
+                    cylinderRadius,
+                    cylinderLength,
+                    16  // 分段数
+                );
+                
+                // 创建材质
+                const material = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                
+                // 创建网格
+                const cylinder = new THREE.Mesh(geometry, material);
+                
+                // 计算旋转：将圆柱体从默认的Y轴方向旋转到目标方向
+                const defaultDirection = new THREE.Vector3(0, 1, 0);
+                const rotationAxis = new THREE.Vector3().crossVectors(defaultDirection, dirVec);
+                const rotationAngle = Math.acos(Math.max(-1, Math.min(1, defaultDirection.dot(dirVec))));
+                
+                if (rotationAxis.length() > 0.001) {
+                    rotationAxis.normalize();
+                    cylinder.rotateOnAxis(rotationAxis, rotationAngle);
+                } else if (dirVec.dot(defaultDirection) < -0.99) {
+                    // 如果方向相反，绕X轴旋转180度
+                    cylinder.rotateX(Math.PI);
+                }
+                
+                // 将圆柱体中心移动到质心（origin）
+                // 圆柱体默认中心在几何体中心，所以直接设置位置即可
+                cylinder.position.copy(originVec);
+                
+                cylinder.userData.label = label;
+                return cylinder;
+            }
+            
+            // 创建组来管理中线
+            targetAxisGroup = new THREE.Group();
+            candidateAxisGroup = new THREE.Group();
+            
+            // 目标（鞋模）的中线 - 红色
+            if (axesData.target) {
+                const targetCenter = axesData.target.center;
+                // 纵向轴（中线）- 红色
+                const targetLongitudinal = createCylinderAxis(
+                    targetCenter,
+                    axesData.target.longitudinal_axis,
+                    0xff0000,  // 红色
+                    '鞋模中线'
+                );
+                targetAxisGroup.add(targetLongitudinal);
+            }
+            
+            // 变换后的候选（粗胚）的中线 - 绿色
+            if (axesData.candidate_transformed) {
+                const candidateCenter = axesData.candidate_transformed.center;
+                // 纵向轴（中线）- 绿色
+                const candidateLongitudinal = createCylinderAxis(
+                    candidateCenter,
+                    axesData.candidate_transformed.longitudinal_axis,
+                    0x00ff00,  // 绿色
+                    '粗胚中线'
+                );
+                candidateAxisGroup.add(candidateLongitudinal);
+            }
+            
+            // 添加到场景
+            scene.add(targetAxisGroup);
+            scene.add(candidateAxisGroup);
+            
+            // 设置初始可见性
+            updateAxisVisibility();
+        }
+        
+        // 更新中线可见性
+        function updateAxisVisibility() {
+            const showTarget = document.getElementById('showTargetAxis').checked;
+            const showCandidate = document.getElementById('showCandidateAxis').checked;
+            
+            if (targetAxisGroup) {
+                targetAxisGroup.visible = showTarget;
+            }
+            if (candidateAxisGroup) {
+                candidateAxisGroup.visible = showCandidate;
+            }
+        }
+        
+        // 绑定中线显示控制事件（在页面加载后）
+        setTimeout(() => {
+            const showTargetAxis = document.getElementById('showTargetAxis');
+            const showCandidateAxis = document.getElementById('showCandidateAxis');
+            
+            if (showTargetAxis) {
+                showTargetAxis.addEventListener('change', updateAxisVisibility);
+            }
+            if (showCandidateAxis) {
+                showCandidateAxis.addEventListener('change', updateAxisVisibility);
+            }
+        }, 100);
+        
+        // 清除轴的可视化
+        function clearAxes() {
+            // 清除旧的箭头（如果存在）
+            axisHelpers.forEach(helper => {
+                scene.remove(helper);
+                if (helper.geometry) helper.geometry.dispose();
+                if (helper.material) helper.material.dispose();
+            });
+            axisHelpers = [];
+            
+            // 清除中线组
+            if (targetAxisGroup) {
+                targetAxisGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+                scene.remove(targetAxisGroup);
+                targetAxisGroup = null;
+            }
+            if (candidateAxisGroup) {
+                candidateAxisGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                });
+                scene.remove(candidateAxisGroup);
+                candidateAxisGroup = null;
+            }
+            
+            // 隐藏控制面板
+            document.getElementById('axisControls').style.display = 'none';
+        }
+
+        function clearMatchResult() {
+            if (targetMesh) {
+                scene.remove(targetMesh);
+                targetMesh.geometry.dispose();
+                targetMesh.material.dispose();
+                targetMesh = null;
+            }
+            if (candidateMesh) {
+                scene.remove(candidateMesh);
+                candidateMesh.geometry.dispose();
+                candidateMesh.material.dispose();
+                candidateMesh = null;
+            }
+            clearAxes();
+        }
+
+        // 初始化
+        initViewer();
+    </script>
+</body>
+</html>
