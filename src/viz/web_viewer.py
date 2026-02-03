@@ -86,6 +86,38 @@ def upload_file():
         # 加载 3DM 文件
         vertices, faces = load_3dm_file(temp_path, mesh_quality=mesh_quality)
         
+        # 计算三个轴（与C++算法保持一致）
+        axes_data = None
+        if MATCHER_AVAILABLE:
+            try:
+                # 计算纵向轴
+                longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+                    vertices.flatten().tolist(), faces.flatten().tolist()
+                ))
+                longitudinal_axis = longitudinal_axis / np.linalg.norm(longitudinal_axis)
+                
+                # 计算垂直轴
+                vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
+                    vertices.flatten().tolist(), faces.flatten().tolist()
+                ))
+                vertical_axis = vertical_axis / np.linalg.norm(vertical_axis)
+                
+                # 计算横向轴（纵向轴和垂直轴的叉积）
+                lateral_axis = np.cross(longitudinal_axis, vertical_axis)
+                lateral_axis = lateral_axis / np.linalg.norm(lateral_axis)
+                
+                # 计算质心
+                center = np.mean(vertices, axis=0)
+                
+                axes_data = {
+                    'center': center.tolist(),
+                    'longitudinal_axis': longitudinal_axis.tolist(),
+                    'vertical_axis': vertical_axis.tolist(),
+                    'lateral_axis': lateral_axis.tolist()
+                }
+            except Exception as e:
+                print(f"警告: 计算轴时出错: {str(e)}")
+        
         # 清理临时文件
         os.remove(temp_path)
         
@@ -105,6 +137,10 @@ def upload_file():
                 }
             }
         }
+        
+        # 如果计算了轴，添加到结果中
+        if axes_data:
+            result['axes'] = axes_data
         
         return jsonify(result)
         
@@ -281,6 +317,19 @@ def match_files():
         candidate_vertical_axis_transformed = candidate_vertical_axis_transformed / np.linalg.norm(candidate_vertical_axis_transformed)
         candidate_center_transformed = candidate_center + translation_vec  # 质心会平移
         
+        # 计算横向轴（纵向轴和垂直轴的叉积）
+        # 目标（鞋模）的横向轴
+        target_lateral_axis = np.cross(target_longitudinal_axis, target_vertical_axis)
+        target_lateral_axis = target_lateral_axis / np.linalg.norm(target_lateral_axis)
+        
+        # 候选（粗胚）原始横向轴
+        candidate_lateral_axis = np.cross(longitudinal_axis, candidate_vertical_axis)
+        candidate_lateral_axis = candidate_lateral_axis / np.linalg.norm(candidate_lateral_axis)
+        
+        # 变换后的候选（粗胚）横向轴
+        candidate_lateral_axis_transformed = np.cross(candidate_longitudinal_axis_transformed, candidate_vertical_axis_transformed)
+        candidate_lateral_axis_transformed = candidate_lateral_axis_transformed / np.linalg.norm(candidate_lateral_axis_transformed)
+        
         # 返回结果
         return jsonify({
             'success': True,
@@ -307,22 +356,25 @@ def match_files():
             'candidate_vertices': candidate_vertices.tolist(),
             'candidate_faces': candidate_faces.tolist(),
             'candidate_vertices_transformed': candidate_vertices_transformed.tolist(),
-            # 添加轴信息
+            # 添加轴信息（包含三个轴：纵向轴、垂直轴、横向轴）
             'axes': {
                 'target': {
                     'center': target_center.tolist(),
                     'longitudinal_axis': target_longitudinal_axis.tolist(),
-                    'vertical_axis': target_vertical_axis.tolist()
+                    'vertical_axis': target_vertical_axis.tolist(),
+                    'lateral_axis': target_lateral_axis.tolist()
                 },
                 'candidate_original': {
                     'center': candidate_center.tolist(),
                     'longitudinal_axis': longitudinal_axis.tolist(),
-                    'vertical_axis': candidate_vertical_axis.tolist()
+                    'vertical_axis': candidate_vertical_axis.tolist(),
+                    'lateral_axis': candidate_lateral_axis.tolist()
                 },
                 'candidate_transformed': {
                     'center': candidate_center_transformed.tolist(),
                     'longitudinal_axis': candidate_longitudinal_axis_transformed.tolist(),
-                    'vertical_axis': candidate_vertical_axis_transformed.tolist()
+                    'vertical_axis': candidate_vertical_axis_transformed.tolist(),
+                    'lateral_axis': candidate_lateral_axis_transformed.tolist()
                 }
             }
         })

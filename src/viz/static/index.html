@@ -350,14 +350,21 @@
                     <p>右键拖拽：平移</p>
                     <p>滚轮：缩放</p>
                     <div id="axisControls" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
-                        <h4 style="margin-bottom: 10px;">📏 中线显示</h4>
+                        <h4 style="margin-bottom: 10px;">📐 坐标轴显示</h4>
                         <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
                             <input type="checkbox" id="showTargetAxis" checked style="margin-right: 8px;">
-                            <span>鞋模中线 (红色)</span>
+                            <span>鞋模坐标轴 (红色/绿色/蓝色)</span>
                         </label>
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="showCandidateAxis" checked style="margin-right: 8px;">
-                            <span>粗胚中线 (绿色)</span>
+                            <span>粗胚坐标轴 (浅红/浅绿/浅蓝)</span>
+                        </label>
+                    </div>
+                    <div id="viewModeAxisControls" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+                        <h4 style="margin-bottom: 10px;">📐 坐标轴显示</h4>
+                        <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
+                            <input type="checkbox" id="showViewModeAxes" checked style="margin-right: 8px;">
+                            <span>显示坐标轴</span>
                         </label>
                     </div>
                 </div>
@@ -380,6 +387,7 @@
         let axisHelpers = [];  // 存储轴的可视化对象
         let targetAxisGroup = null;  // 鞋模中线组
         let candidateAxisGroup = null;  // 粗胚中线组
+        let viewModeAxisGroup = null;  // 查看模式的轴组
         const viewer = document.getElementById('viewer');
         const fileInput = document.getElementById('fileInput');
         const fileLabel = document.getElementById('fileLabel');
@@ -507,7 +515,7 @@
                 displayFileInfo(data.info, data.stats);
                 
                 // 加载模型到场景
-                loadModel(data.vertices, data.faces);
+                loadModel(data.vertices, data.faces, data.axes);
                 
                 emptyState.style.display = 'none';
                 
@@ -561,13 +569,14 @@
         }
 
         // 加载模型到 Three.js 场景
-        function loadModel(vertices, faces) {
-            // 移除旧模型
+        function loadModel(vertices, faces, axesData) {
+            // 移除旧模型和轴
             if (currentMesh) {
                 scene.remove(currentMesh);
                 currentMesh.geometry.dispose();
                 currentMesh.material.dispose();
             }
+            clearViewModeAxes();
             
             // 创建几何体
             const geometry = new THREE.BufferGeometry();
@@ -611,6 +620,11 @@
             camera.lookAt(center);
             controls.target.copy(center);
             controls.update();
+            
+            // 如果提供了轴数据，显示三个轴
+            if (axesData) {
+                visualizeViewModeAxes(axesData, maxDim);
+            }
         }
 
         // 显示错误
@@ -640,6 +654,8 @@
             matchModeBtn.style.background = '#ccc';
             // 清除匹配结果
             clearMatchResult();
+            // 清除查看模式的轴
+            clearViewModeAxes();
         });
 
         matchModeBtn.addEventListener('click', () => {
@@ -655,6 +671,7 @@
                 currentMesh.material.dispose();
                 currentMesh = null;
             }
+            clearViewModeAxes();
         });
 
         // 文件选择处理（匹配模式）
@@ -841,40 +858,58 @@
             
             // 可视化轴（如果数据中有轴信息）
             if (data.axes) {
-                visualizeAxes(data.axes, maxDim);
+                // 计算合并后的最大尺寸
+                targetGeometry.computeBoundingBox();
+                candidateGeometry.computeBoundingBox();
+                const targetBox = targetGeometry.boundingBox;
+                const candidateBox = candidateGeometry.boundingBox;
+                const min = new THREE.Vector3(
+                    Math.min(targetBox.min.x, candidateBox.min.x),
+                    Math.min(targetBox.min.y, candidateBox.min.y),
+                    Math.min(targetBox.min.z, candidateBox.min.z)
+                );
+                const max = new THREE.Vector3(
+                    Math.max(targetBox.max.x, candidateBox.max.x),
+                    Math.max(targetBox.max.y, candidateBox.max.y),
+                    Math.max(targetBox.max.z, candidateBox.max.z)
+                );
+                const size = new THREE.Vector3().subVectors(max, min);
+                const maxDimCombined = Math.max(size.x, size.y, size.z);
+                visualizeAxes(data.axes, maxDimCombined);
             }
         }
         
-        // 可视化轴（使用圆柱体中线样式）
-        function visualizeAxes(axesData, axisLength) {
+        // 可视化轴（使用与查看模式相同的样式）
+        function visualizeAxes(axesData, maxDim) {
             // 清除旧的轴
             clearAxes();
             
-            // 显示中线控制面板
+            // 显示轴控制面板
             document.getElementById('axisControls').style.display = 'block';
             
-            // 轴的长度设置为网格最大尺寸的1.0倍（double，中线应该更长）
-            const cylinderLength = axisLength * 1.0;
-            const cylinderRadius = 1.5;  // 1.5mm 半径
+            // 轴的长度设置为网格最大尺寸的1.5倍（加长，与查看模式一致）
+            const axisLength = maxDim * 1.5;
+            // 轴的半径设置为网格最大尺寸的0.01倍（加粗，与查看模式一致）
+            const axisRadius = maxDim * 0.01;
             
-            // 创建圆柱体中线辅助函数
-            function createCylinderAxis(origin, direction, color, label) {
+            // 创建轴的辅助函数（与查看模式相同）
+            function createAxis(origin, direction, color, label) {
                 const originVec = new THREE.Vector3(...origin);
                 const dirVec = new THREE.Vector3(...direction).normalize();
                 
-                // 创建圆柱体几何体（默认沿Y轴，高度为cylinderLength）
+                // 创建圆柱体几何体（默认沿Y轴）
                 const geometry = new THREE.CylinderGeometry(
-                    cylinderRadius,
-                    cylinderRadius,
-                    cylinderLength,
-                    16  // 分段数
+                    axisRadius,
+                    axisRadius,
+                    axisLength,
+                    32  // 分段数，增加以显示更平滑
                 );
                 
                 // 创建材质
                 const material = new THREE.MeshBasicMaterial({
                     color: color,
                     transparent: true,
-                    opacity: 0.8
+                    opacity: 0.9
                 });
                 
                 // 创建网格
@@ -893,42 +928,110 @@
                     cylinder.rotateX(Math.PI);
                 }
                 
-                // 将圆柱体中心移动到质心（origin）
-                // 圆柱体默认中心在几何体中心，所以直接设置位置即可
+                // 将圆柱体中心移动到质心
                 cylinder.position.copy(originVec);
                 
-                cylinder.userData.label = label;
-                return cylinder;
+                // 创建文本标签（使用Sprite）
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = 256;
+                canvas.height = 64;
+                context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.fillStyle = '#000000';
+                context.font = 'Bold 32px Arial';
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(label, canvas.width / 2, canvas.height / 2);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+                const sprite = new THREE.Sprite(spriteMaterial);
+                sprite.scale.set(axisLength * 0.3, axisLength * 0.1, 1);
+                
+                // 将标签放在轴的末端
+                const labelPosition = originVec.clone().add(dirVec.clone().multiplyScalar(axisLength / 2 + axisLength * 0.2));
+                sprite.position.copy(labelPosition);
+                
+                // 创建组来包含圆柱体和标签
+                const axisGroup = new THREE.Group();
+                axisGroup.add(cylinder);
+                axisGroup.add(sprite);
+                axisGroup.userData.label = label;
+                
+                return axisGroup;
             }
             
-            // 创建组来管理中线
+            // 创建组来管理轴
             targetAxisGroup = new THREE.Group();
             candidateAxisGroup = new THREE.Group();
             
-            // 目标（鞋模）的中线 - 红色
+            // 目标（鞋模）的三个轴
             if (axesData.target) {
                 const targetCenter = axesData.target.center;
-                // 纵向轴（中线）- 红色
-                const targetLongitudinal = createCylinderAxis(
+                
+                // 纵向轴 - 红色
+                const targetLongitudinal = createAxis(
                     targetCenter,
                     axesData.target.longitudinal_axis,
                     0xff0000,  // 红色
-                    '鞋模中线'
+                    '纵向轴'
                 );
                 targetAxisGroup.add(targetLongitudinal);
+                
+                // 垂直轴 - 绿色
+                const targetVertical = createAxis(
+                    targetCenter,
+                    axesData.target.vertical_axis,
+                    0x00ff00,  // 绿色
+                    '垂直轴'
+                );
+                targetAxisGroup.add(targetVertical);
+                
+                // 横向轴 - 蓝色
+                if (axesData.target.lateral_axis) {
+                    const targetLateral = createAxis(
+                        targetCenter,
+                        axesData.target.lateral_axis,
+                        0x0000ff,  // 蓝色
+                        '横向轴'
+                    );
+                    targetAxisGroup.add(targetLateral);
+                }
             }
             
-            // 变换后的候选（粗胚）的中线 - 绿色
+            // 变换后的候选（粗胚）的三个轴
             if (axesData.candidate_transformed) {
                 const candidateCenter = axesData.candidate_transformed.center;
-                // 纵向轴（中线）- 绿色
-                const candidateLongitudinal = createCylinderAxis(
+                
+                // 纵向轴 - 浅红色
+                const candidateLongitudinal = createAxis(
                     candidateCenter,
                     axesData.candidate_transformed.longitudinal_axis,
-                    0x00ff00,  // 绿色
-                    '粗胚中线'
+                    0xff6666,  // 浅红色
+                    '纵向轴'
                 );
                 candidateAxisGroup.add(candidateLongitudinal);
+                
+                // 垂直轴 - 浅绿色
+                const candidateVertical = createAxis(
+                    candidateCenter,
+                    axesData.candidate_transformed.vertical_axis,
+                    0x66ff66,  // 浅绿色
+                    '垂直轴'
+                );
+                candidateAxisGroup.add(candidateVertical);
+                
+                // 横向轴 - 浅蓝色
+                if (axesData.candidate_transformed.lateral_axis) {
+                    const candidateLateral = createAxis(
+                        candidateCenter,
+                        axesData.candidate_transformed.lateral_axis,
+                        0x6666ff,  // 浅蓝色
+                        '横向轴'
+                    );
+                    candidateAxisGroup.add(candidateLateral);
+                }
             }
             
             // 添加到场景
@@ -975,11 +1078,14 @@
             });
             axisHelpers = [];
             
-            // 清除中线组
+            // 清除轴组（包括sprite和texture）
             if (targetAxisGroup) {
                 targetAxisGroup.traverse((child) => {
                     if (child.geometry) child.geometry.dispose();
-                    if (child.material) child.material.dispose();
+                    if (child.material) {
+                        if (child.material.map) child.material.map.dispose();
+                        child.material.dispose();
+                    }
                 });
                 scene.remove(targetAxisGroup);
                 targetAxisGroup = null;
@@ -987,7 +1093,10 @@
             if (candidateAxisGroup) {
                 candidateAxisGroup.traverse((child) => {
                     if (child.geometry) child.geometry.dispose();
-                    if (child.material) child.material.dispose();
+                    if (child.material) {
+                        if (child.material.map) child.material.map.dispose();
+                        child.material.dispose();
+                    }
                 });
                 scene.remove(candidateAxisGroup);
                 candidateAxisGroup = null;
@@ -1012,6 +1121,160 @@
             }
             clearAxes();
         }
+
+        // 可视化查看模式的三个轴
+        function visualizeViewModeAxes(axesData, maxDim) {
+            // 清除旧的轴
+            clearViewModeAxes();
+            
+            // 显示轴控制面板
+            document.getElementById('viewModeAxisControls').style.display = 'block';
+            
+            // 轴的长度设置为网格最大尺寸的1.5倍（加长）
+            const axisLength = maxDim * 1.5;
+            // 轴的半径设置为网格最大尺寸的0.01倍（加粗）
+            const axisRadius = maxDim * 0.01;
+            
+            // 创建轴组
+            viewModeAxisGroup = new THREE.Group();
+            
+            const center = new THREE.Vector3(...axesData.center);
+            
+            // 创建轴的辅助函数
+            function createAxis(origin, direction, color, label) {
+                const originVec = new THREE.Vector3(...origin);
+                const dirVec = new THREE.Vector3(...direction).normalize();
+                
+                // 创建圆柱体几何体（默认沿Y轴）
+                const geometry = new THREE.CylinderGeometry(
+                    axisRadius,
+                    axisRadius,
+                    axisLength,
+                    32  // 分段数，增加以显示更平滑
+                );
+                
+                // 创建材质
+                const material = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 0.9
+                });
+                
+                // 创建网格
+                const cylinder = new THREE.Mesh(geometry, material);
+                
+                // 计算旋转：将圆柱体从默认的Y轴方向旋转到目标方向
+                const defaultDirection = new THREE.Vector3(0, 1, 0);
+                const rotationAxis = new THREE.Vector3().crossVectors(defaultDirection, dirVec);
+                const rotationAngle = Math.acos(Math.max(-1, Math.min(1, defaultDirection.dot(dirVec))));
+                
+                if (rotationAxis.length() > 0.001) {
+                    rotationAxis.normalize();
+                    cylinder.rotateOnAxis(rotationAxis, rotationAngle);
+                } else if (dirVec.dot(defaultDirection) < -0.99) {
+                    // 如果方向相反，绕X轴旋转180度
+                    cylinder.rotateX(Math.PI);
+                }
+                
+                // 将圆柱体中心移动到质心
+                cylinder.position.copy(originVec);
+                
+                // 创建文本标签（使用Sprite）
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = 256;
+                canvas.height = 64;
+                context.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.fillStyle = '#000000';
+                context.font = 'Bold 32px Arial';
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(label, canvas.width / 2, canvas.height / 2);
+                
+                const texture = new THREE.CanvasTexture(canvas);
+                const spriteMaterial = new THREE.SpriteMaterial({ map: texture });
+                const sprite = new THREE.Sprite(spriteMaterial);
+                sprite.scale.set(axisLength * 0.3, axisLength * 0.1, 1);
+                
+                // 将标签放在轴的末端
+                const labelPosition = originVec.clone().add(dirVec.clone().multiplyScalar(axisLength / 2 + axisLength * 0.2));
+                sprite.position.copy(labelPosition);
+                
+                // 创建组来包含圆柱体和标签
+                const axisGroup = new THREE.Group();
+                axisGroup.add(cylinder);
+                axisGroup.add(sprite);
+                axisGroup.userData.label = label;
+                
+                return axisGroup;
+            }
+            
+            // 纵向轴 - 红色
+            const longitudinalAxis = createAxis(
+                axesData.center,
+                axesData.longitudinal_axis,
+                0xff0000,  // 红色
+                '纵向轴'
+            );
+            viewModeAxisGroup.add(longitudinalAxis);
+            
+            // 垂直轴 - 绿色
+            const verticalAxis = createAxis(
+                axesData.center,
+                axesData.vertical_axis,
+                0x00ff00,  // 绿色
+                '垂直轴'
+            );
+            viewModeAxisGroup.add(verticalAxis);
+            
+            // 横向轴 - 蓝色
+            const lateralAxis = createAxis(
+                axesData.center,
+                axesData.lateral_axis,
+                0x0000ff,  // 蓝色
+                '横向轴'
+            );
+            viewModeAxisGroup.add(lateralAxis);
+            
+            // 添加到场景
+            scene.add(viewModeAxisGroup);
+            
+            // 设置初始可见性
+            updateViewModeAxisVisibility();
+        }
+        
+        // 更新查看模式轴的可见性
+        function updateViewModeAxisVisibility() {
+            const showAxes = document.getElementById('showViewModeAxes').checked;
+            if (viewModeAxisGroup) {
+                viewModeAxisGroup.visible = showAxes;
+            }
+        }
+        
+        // 清除查看模式的轴
+        function clearViewModeAxes() {
+            if (viewModeAxisGroup) {
+                viewModeAxisGroup.traverse((child) => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (child.material.map) child.material.map.dispose();
+                        child.material.dispose();
+                    }
+                });
+                scene.remove(viewModeAxisGroup);
+                viewModeAxisGroup = null;
+            }
+            document.getElementById('viewModeAxisControls').style.display = 'none';
+        }
+        
+        // 绑定查看模式轴显示控制事件
+        setTimeout(() => {
+            const showViewModeAxes = document.getElementById('showViewModeAxes');
+            if (showViewModeAxes) {
+                showViewModeAxes.addEventListener('change', updateViewModeAxisVisibility);
+            }
+        }, 100);
 
         // 初始化
         initViewer();
