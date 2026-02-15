@@ -350,14 +350,18 @@
                     <p>右键拖拽：平移</p>
                     <p>滚轮：缩放</p>
                     <div id="axisControls" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
-                        <h4 style="margin-bottom: 10px;">📐 坐标轴显示</h4>
+                        <h4 style="margin-bottom: 10px;">📐 坐标轴与外点显示</h4>
                         <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
                             <input type="checkbox" id="showTargetAxis" checked style="margin-right: 8px;">
-                            <span>鞋模坐标轴 (红色/绿色/蓝色)</span>
+                            <span>鞋模坐标轴 (红/绿/蓝)</span>
                         </label>
-                        <label style="display: flex; align-items: center; cursor: pointer;">
+                        <label style="display: flex; align-items: center; margin-bottom: 8px; cursor: pointer;">
                             <input type="checkbox" id="showCandidateAxis" checked style="margin-right: 8px;">
                             <span>粗胚坐标轴 (浅红/浅绿/浅蓝)</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="showOutsidePoints" checked style="margin-right: 8px;">
+                            <span>显示粗胚外的采样点 (洋红色)</span>
                         </label>
                     </div>
                     <div id="viewModeAxisControls" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
@@ -385,9 +389,10 @@
         let candidateMesh = null;
         let isMatchMode = false;
         let axisHelpers = [];  // 存储轴的可视化对象
-        let targetAxisGroup = null;  // 鞋模中线组
-        let candidateAxisGroup = null;  // 粗胚中线组
+        let targetAxisGroup = null;  // 鞋模坐标轴组
+        let candidateAxisGroup = null;  // 粗胚坐标轴组
         let viewModeAxisGroup = null;  // 查看模式的轴组
+        let outsidePointsGroup = null; // 粗胚外采样点
         const viewer = document.getElementById('viewer');
         const fileInput = document.getElementById('fileInput');
         const fileLabel = document.getElementById('fileLabel');
@@ -877,6 +882,9 @@
                 const maxDimCombined = Math.max(size.x, size.y, size.z);
                 visualizeAxes(data.axes, maxDimCombined);
             }
+
+            // 可视化粗胚外的采样点
+            visualizeOutsidePoints(maxDim);
         }
         
         // 可视化轴（使用与查看模式相同的样式）
@@ -1054,17 +1062,97 @@
                 candidateAxisGroup.visible = showCandidate;
             }
         }
+
+        // 可视化粗胚外的采样点（匹配模式）
+        function visualizeOutsidePoints(maxDim) {
+            clearOutsidePoints();
+
+            // 需要目标网格和候选网格都存在
+            if (!targetMesh || !candidateMesh) return;
+
+            const geometry = targetMesh.geometry;
+            const positionAttr = geometry.getAttribute('position');
+            if (!positionAttr) return;
+
+            const vertexCount = positionAttr.count;
+            if (vertexCount === 0) return;
+
+            const maxSamples = 500;
+            const step = Math.max(1, Math.floor(vertexCount / maxSamples));
+
+            const raycaster = new THREE.Raycaster();
+            const rayDir = new THREE.Vector3(1, 0, 0).normalize();
+            const outsidePositions = [];
+
+            const local = new THREE.Vector3();
+            const worldPoint = new THREE.Vector3();
+
+            for (let i = 0; i < vertexCount && outsidePositions.length < maxSamples; i += step) {
+                local.fromBufferAttribute(positionAttr, i);
+                // 转到世界坐标系
+                worldPoint.copy(local);
+                targetMesh.localToWorld(worldPoint);
+
+                // 从点稍微偏移一点，避免数值问题
+                const origin = worldPoint.clone().addScaledVector(rayDir, 1e-4);
+                raycaster.set(origin, rayDir);
+
+                const intersects = raycaster.intersectObject(candidateMesh, true);
+                const count = intersects.length;
+                const isInside = (count % 2 === 1);
+
+                if (!isInside) {
+                    outsidePositions.push(worldPoint.clone());
+                }
+            }
+
+            if (outsidePositions.length === 0) return;
+
+            const ptsGeom = new THREE.BufferGeometry();
+            const ptsArray = new Float32Array(outsidePositions.length * 3);
+            for (let i = 0; i < outsidePositions.length; i++) {
+                ptsArray[i * 3] = outsidePositions[i].x;
+                ptsArray[i * 3 + 1] = outsidePositions[i].y;
+                ptsArray[i * 3 + 2] = outsidePositions[i].z;
+            }
+            ptsGeom.setAttribute('position', new THREE.BufferAttribute(ptsArray, 3));
+
+            const size = Math.max(maxDim * 0.01, 0.5);
+            const ptsMaterial = new THREE.PointsMaterial({
+                color: 0xff00ff,  // 洋红色
+                size: size,
+                sizeAttenuation: true,
+                transparent: true,
+                opacity: 0.9
+            });
+
+            outsidePointsGroup = new THREE.Points(ptsGeom, ptsMaterial);
+
+            // 初始可见性根据勾选框
+            const showOutside = document.getElementById('showOutsidePoints');
+            outsidePointsGroup.visible = showOutside ? showOutside.checked : true;
+
+            scene.add(outsidePointsGroup);
+        }
         
         // 绑定中线显示控制事件（在页面加载后）
         setTimeout(() => {
             const showTargetAxis = document.getElementById('showTargetAxis');
             const showCandidateAxis = document.getElementById('showCandidateAxis');
+            const showOutsidePoints = document.getElementById('showOutsidePoints');
             
             if (showTargetAxis) {
                 showTargetAxis.addEventListener('change', updateAxisVisibility);
             }
             if (showCandidateAxis) {
                 showCandidateAxis.addEventListener('change', updateAxisVisibility);
+            }
+            if (showOutsidePoints) {
+                showOutsidePoints.addEventListener('change', () => {
+                    if (outsidePointsGroup) {
+                        outsidePointsGroup.visible = showOutsidePoints.checked;
+                    }
+                });
             }
         }, 100);
         
@@ -1106,6 +1194,16 @@
             document.getElementById('axisControls').style.display = 'none';
         }
 
+        // 清除粗胚外采样点
+        function clearOutsidePoints() {
+            if (outsidePointsGroup) {
+                if (outsidePointsGroup.geometry) outsidePointsGroup.geometry.dispose();
+                if (outsidePointsGroup.material) outsidePointsGroup.material.dispose();
+                scene.remove(outsidePointsGroup);
+                outsidePointsGroup = null;
+            }
+        }
+
         function clearMatchResult() {
             if (targetMesh) {
                 scene.remove(targetMesh);
@@ -1120,6 +1218,7 @@
                 candidateMesh = null;
             }
             clearAxes();
+            clearOutsidePoints();
         }
 
         // 可视化查看模式的三个轴

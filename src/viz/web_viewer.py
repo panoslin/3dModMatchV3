@@ -243,6 +243,59 @@ def match_files():
             wrapping_threshold=wrapping_threshold
         )
         
+        # =========================
+        # 同步 C++ alignDirections：旋转鞋模（target）以与粗胚（candidate）方向对齐
+        # 注意：match_optimized 内部会对齐方向并在对齐后的坐标系里计算包裹率/优化；
+        # 前端若仍显示“未对齐的鞋模 + 已优化粗胚”，会造成肉眼判断与后端数值不一致。
+        # 这里在 API 层复刻 C++ alignDirections 的旋转矩阵并应用到 target_vertices，
+        # 使可视化与后端包裹率计算的坐标系一致。
+        # =========================
+        def _normalize(v: np.ndarray) -> np.ndarray:
+            n = np.linalg.norm(v)
+            return v if n == 0 else (v / n)
+
+        def _build_frame(longitudinal: np.ndarray, vertical: np.ndarray) -> np.ndarray:
+            # 对齐 matcher.cpp::alignDirections 的 frame 构建逻辑
+            x = _normalize(longitudinal)
+            side = np.cross(x, vertical)
+            if np.linalg.norm(side) < 1e-6:
+                if abs(x[0]) < 0.9:
+                    side = np.cross(x, np.array([1.0, 0.0, 0.0]))
+                else:
+                    side = np.cross(x, np.array([0.0, 1.0, 0.0]))
+            y = _normalize(side)
+            z = _normalize(np.cross(x, y))
+            return np.column_stack([x, y, z])
+
+        target_longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
+        ), dtype=float)
+        target_longitudinal_axis = _normalize(target_longitudinal_axis)
+
+        target_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
+            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
+        ), dtype=float)
+        target_vertical_axis = _normalize(target_vertical_axis)
+
+        candidate_longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()
+        ), dtype=float)
+        candidate_longitudinal_axis = _normalize(candidate_longitudinal_axis)
+
+        candidate_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
+            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()
+        ), dtype=float)
+        candidate_vertical_axis = _normalize(candidate_vertical_axis)
+
+        target_frame = _build_frame(target_longitudinal_axis, target_vertical_axis)
+        candidate_frame = _build_frame(candidate_longitudinal_axis, candidate_vertical_axis)
+        rotation_matrix_align = candidate_frame @ target_frame.T
+
+        # 旋转 target 顶点（绕 target 质心旋转）
+        target_center = np.mean(target_vertices, axis=0)
+        target_vertices_aligned = target_vertices - target_center
+        target_vertices_aligned = (rotation_matrix_align @ target_vertices_aligned.T).T + target_center
+
         # 计算纵向轴和质心（用于构建转换矩阵）
         longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
             candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()
@@ -252,18 +305,18 @@ def match_files():
         # 计算候选网格质心
         candidate_center = np.mean(candidate_vertices, axis=0)
         
-        # 计算目标（鞋模）的纵向轴和垂直轴
-        target_longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
-        ))
-        target_longitudinal_axis = target_longitudinal_axis / np.linalg.norm(target_longitudinal_axis)
-        
-        target_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
-        ))
-        target_vertical_axis = target_vertical_axis / np.linalg.norm(target_vertical_axis)
-        
-        target_center = np.mean(target_vertices, axis=0)
+        # 重新计算目标（鞋模）在“对齐后坐标系”下的轴与质心（用于可视化同步）
+        target_longitudinal_axis_aligned = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()
+        ), dtype=float)
+        target_longitudinal_axis_aligned = target_longitudinal_axis_aligned / np.linalg.norm(target_longitudinal_axis_aligned)
+
+        target_vertical_axis_aligned = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
+            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()
+        ), dtype=float)
+        target_vertical_axis_aligned = target_vertical_axis_aligned / np.linalg.norm(target_vertical_axis_aligned)
+
+        target_center_aligned = np.mean(target_vertices_aligned, axis=0)
         
         # 计算候选（粗胚）的纵向轴和垂直轴（原始）
         candidate_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
@@ -351,7 +404,8 @@ def match_files():
             'transformation_matrix': transformation_matrix,
             'longitudinal_axis': longitudinal_axis.tolist(),
             'candidate_center': candidate_center.tolist(),
-            'target_vertices': target_vertices.tolist(),
+            # 返回“已对齐”的鞋模顶点，使前端可视化与后端包裹率计算一致
+            'target_vertices': target_vertices_aligned.tolist(),
             'target_faces': target_faces.tolist(),
             'candidate_vertices': candidate_vertices.tolist(),
             'candidate_faces': candidate_faces.tolist(),
@@ -359,9 +413,9 @@ def match_files():
             # 添加轴信息（包含三个轴：纵向轴、垂直轴、横向轴）
             'axes': {
                 'target': {
-                    'center': target_center.tolist(),
-                    'longitudinal_axis': target_longitudinal_axis.tolist(),
-                    'vertical_axis': target_vertical_axis.tolist(),
+                    'center': target_center_aligned.tolist(),
+                    'longitudinal_axis': target_longitudinal_axis_aligned.tolist(),
+                    'vertical_axis': target_vertical_axis_aligned.tolist(),
                     'lateral_axis': target_lateral_axis.tolist()
                 },
                 'candidate_original': {

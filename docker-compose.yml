@@ -16,6 +16,9 @@ services:
     environment:
       - PYTHONPATH=/app
       - FLASK_ENV=production
+      - OMP_NUM_THREADS=8
+      - OMP_PROC_BIND=true
+      - OMP_PLACES=cores
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')"]
       interval: 30s
@@ -39,3 +42,6 @@ services:
     restart: "no"
     environment:
       - PYTHONPATH=/app
+      - OMP_NUM_THREADS=8
+      - OMP_PROC_BIND=true
+      - OMP_PLACES=cores

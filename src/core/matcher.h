@@ -33,12 +33,12 @@ struct GradientDescentParams {
         : learning_rate_translation(0.2),
           learning_rate_rotation(0.05),
           learning_rate_vertical(0.2),
-          h_translation(0.1),
-          h_rotation(0.01),
+          h_translation(0.5),          // 从 0.1 增大到 0.5mm，提高梯度估计精度
+          h_rotation(0.05),            // 从 0.01 增大到 0.05弧度（约2.9度），提高梯度估计精度
           h_vertical(0.1),
           max_iterations(50),
           convergence_threshold(0.001),
-          num_sample_points(500) {}
+          num_sample_points(10000) {}  // 从 500 增加到 10000，使损失函数更平滑
 };
 
 struct MatchResult {

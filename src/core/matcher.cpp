@@ -200,6 +200,59 @@ double MeshMatcher::signedDistanceToMeshWithKDTree(
     const std::vector<Eigen::Vector3d>& face_centers,
     const std::vector<Eigen::Vector3d>& face_normals) {
     
+    // 计算点到三角形的最短距离（用于返回距离幅值）
+    auto pointTriangleDistanceSquared = [](const Eigen::Vector3d& p,
+                                          const Eigen::Vector3d& a,
+                                          const Eigen::Vector3d& b,
+                                          const Eigen::Vector3d& c) -> double {
+        // Reference: Real-Time Collision Detection (Christer Ericson)
+        Eigen::Vector3d ab = b - a;
+        Eigen::Vector3d ac = c - a;
+        Eigen::Vector3d ap = p - a;
+
+        double d1 = ab.dot(ap);
+        double d2 = ac.dot(ap);
+        if (d1 <= 0.0 && d2 <= 0.0) return (p - a).squaredNorm(); // barycentric (1,0,0)
+
+        Eigen::Vector3d bp = p - b;
+        double d3 = ab.dot(bp);
+        double d4 = ac.dot(bp);
+        if (d3 >= 0.0 && d4 <= d3) return (p - b).squaredNorm(); // barycentric (0,1,0)
+
+        double vc = d1 * d4 - d3 * d2;
+        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+            double v = d1 / (d1 - d3);
+            Eigen::Vector3d proj = a + v * ab;
+            return (p - proj).squaredNorm(); // edge AB
+        }
+
+        Eigen::Vector3d cp = p - c;
+        double d5 = ab.dot(cp);
+        double d6 = ac.dot(cp);
+        if (d6 >= 0.0 && d5 <= d6) return (p - c).squaredNorm(); // barycentric (0,0,1)
+
+        double vb = d5 * d2 - d1 * d6;
+        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+            double w = d2 / (d2 - d6);
+            Eigen::Vector3d proj = a + w * ac;
+            return (p - proj).squaredNorm(); // edge AC
+        }
+
+        double va = d3 * d6 - d5 * d4;
+        if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+            double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+            Eigen::Vector3d proj = b + w * (c - b);
+            return (p - proj).squaredNorm(); // edge BC
+        }
+
+        // inside face region
+        double denom = 1.0 / (va + vb + vc);
+        double v = vb * denom;
+        double w = vc * denom;
+        Eigen::Vector3d proj = a + ab * v + ac * w;
+        return (p - proj).squaredNorm();
+    };
+
     // 使用KD-tree找到最近的面中心
     auto nearest = face_centers_tree.nearestNeighbor(point);
     if (nearest.second < 0) {
@@ -208,12 +261,13 @@ double MeshMatcher::signedDistanceToMeshWithKDTree(
     
     int nearest_face_idx = nearest.second;
     
-    // 在最近的面附近搜索（半径搜索）
-    double search_radius = 10.0;  // 搜索半径，可以根据网格大小调整
+    // 说明：
+    // - 为了“点到表面最短距离”的幅值计算，我们仍然使用 KD-tree 在局部范围找候选面来加速。
+    // - 为了和前端 Three.js Raycaster 的“整网格计交点（奇偶法）”完全同步，
+    //   交点统计必须遍历整张网格的所有三角形（不依赖 KD-tree 的 radiusSearch 结果）。
+    double search_radius = 10.0;
     std::vector<std::pair<Eigen::Vector3d, int>> nearby_faces;
     face_centers_tree.radiusSearch(point, search_radius, nearby_faces);
-    
-    // 如果附近没有面，扩大搜索范围
     if (nearby_faces.empty()) {
         search_radius *= 10.0;
         face_centers_tree.radiusSearch(point, search_radius, nearby_faces);
@@ -251,11 +305,16 @@ double MeshMatcher::signedDistanceToMeshWithKDTree(
         return std::numeric_limits<double>::max();
     }
     
-    // 在附近的面中查找最近距离
-    double min_distance = std::numeric_limits<double>::max();
-    bool is_inside = false;
+    // 使用射线投射法判断点内外（与前端一致：固定 +X 方向，交点奇偶法）
+    // 同时计算点到三角形的最短距离作为返回的距离幅值。
+    //
+    // 关键同步点（对齐 Three.js Raycaster 的常见处理方式）：
+    // 1) 射线起点沿射线方向做一个极小偏移，避免“恰好在表面/边/顶点”导致交点奇偶翻转。
+    // 2) 对交点的 t 做去重（同一几何位置可能被相邻两个三角形同时命中），避免重复计数。
+    double min_dist2 = std::numeric_limits<double>::max();
+    const Eigen::Vector3d ray_dir(1, 0, 0);
+    const Eigen::Vector3d ray_origin = point + ray_dir * 1e-4; // 与前端一致的微偏移
     int intersection_count = 0;
-    Eigen::Vector3d ray_dir(1, 0, 0);
     
     for (const auto& face_pair : nearby_faces) {
         int face_idx = face_pair.second * 3;
@@ -275,63 +334,59 @@ double MeshMatcher::signedDistanceToMeshWithKDTree(
         Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
         Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
         
-        // 计算点到面的距离
+        // 更新点到三角形的最短距离（用于返回值）
         Eigen::Vector3d edge1 = v1 - v0;
         Eigen::Vector3d edge2 = v2 - v0;
         Eigen::Vector3d normal = edge1.cross(edge2);
-        double area = normal.norm();
+        double area2 = normal.norm();
+        if (area2 < 1e-9) continue; // 退化三角形
+
+        min_dist2 = std::min(min_dist2, pointTriangleDistanceSquared(point, v0, v1, v2));
         
-        if (area < 1e-9) continue;
-        
-        normal /= area;
-        Eigen::Vector3d to_point = point - v0;
-        double dist = to_point.dot(normal);
-        
-        // 检查点是否在三角形内
-        Eigen::Vector3d v0v1 = v1 - v0;
-        Eigen::Vector3d v0v2 = v2 - v0;
-        Eigen::Vector3d v0p = point - v0;
-        
-        double dot00 = v0v1.dot(v0v1);
-        double dot01 = v0v1.dot(v0v2);
-        double dot02 = v0v1.dot(v0p);
-        double dot11 = v0v2.dot(v0v2);
-        double dot12 = v0v2.dot(v0p);
-        
-        double inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01);
-        double u = (dot11 * dot02 - dot01 * dot12) * inv_denom;
-        double v = (dot00 * dot12 - dot01 * dot02) * inv_denom;
-        
-        if (u >= 0 && v >= 0 && u + v <= 1) {
-            min_distance = std::min(min_distance, std::abs(dist));
-            if (dist < 0) {
-                is_inside = true;
-            }
-        } else {
-            min_distance = std::min(min_distance, std::abs(dist));
+        // 射线交点统计不在这里做（这里的循环仅用于距离幅值的局部加速估计）
+    }
+
+    // 射线-三角形相交测试（Möller-Trumbore），遍历整张网格的所有三角形，确保与前端一致
+    for (size_t fi = 0; fi + 2 < faces.size(); fi += 3) {
+        int idx0 = faces[fi] * 3;
+        int idx1 = faces[fi + 1] * 3;
+        int idx2 = faces[fi + 2] * 3;
+
+        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
+            idx1 + 2 >= static_cast<int>(vertices.size()) ||
+            idx2 + 2 >= static_cast<int>(vertices.size())) {
+            continue;
         }
-        
-        // 射线-三角形相交测试
-        Eigen::Vector3d h = ray_dir.cross(edge2);
-        double a = edge1.dot(h);
+
+        const Eigen::Vector3d v0(vertices[idx0], vertices[idx0 + 1], vertices[idx0 + 2]);
+        const Eigen::Vector3d v1(vertices[idx1], vertices[idx1 + 1], vertices[idx1 + 2]);
+        const Eigen::Vector3d v2(vertices[idx2], vertices[idx2 + 1], vertices[idx2 + 2]);
+
+        const Eigen::Vector3d edge1 = v1 - v0;
+        const Eigen::Vector3d edge2 = v2 - v0;
+
+        const Eigen::Vector3d h = ray_dir.cross(edge2);
+        const double a = edge1.dot(h);
         if (std::abs(a) < 1e-9) continue;
-        
-        double f = 1.0 / a;
-        Eigen::Vector3d s = point - v0;
-        double u_ray = f * s.dot(h);
-        if (u_ray < 0 || u_ray > 1) continue;
-        
-        Eigen::Vector3d q = s.cross(edge1);
-        double v_ray = f * ray_dir.dot(q);
-        if (v_ray < 0 || u_ray + v_ray > 1) continue;
-        
-        double t = f * edge2.dot(q);
+
+        const double f = 1.0 / a;
+        const Eigen::Vector3d s = ray_origin - v0;
+        const double u_ray = f * s.dot(h);
+        if (u_ray < 0.0 || u_ray > 1.0) continue;
+
+        const Eigen::Vector3d q = s.cross(edge1);
+        const double v_ray = f * ray_dir.dot(q);
+        if (v_ray < 0.0 || u_ray + v_ray > 1.0) continue;
+
+        const double t = f * edge2.dot(q);
         if (t > 1e-9) {
             intersection_count++;
         }
     }
-    
-    is_inside = (intersection_count % 2 == 1) || is_inside;
+
+    bool is_inside = (intersection_count % 2 == 1);
+    double min_distance = (min_dist2 == std::numeric_limits<double>::max()) ? std::numeric_limits<double>::max()
+                                                                           : std::sqrt(min_dist2);
     return is_inside ? -min_distance : min_distance;
 }
 
@@ -577,19 +632,19 @@ double MeshMatcher::computeWrappingRatio(
     
     auto t0 = std::chrono::high_resolution_clock::now();
     
-    // 检查固定500个顶点（或更少，如果网格顶点数不足）
+    // 检查固定10000个顶点（或更少，如果网格顶点数不足）
     size_t num_vertices = target_vertices.size() / 3;
     if (num_vertices == 0) {
         return 0.0;
     }
     
-    // 固定采样500个点
-    size_t num_to_check = std::min(500UL, num_vertices);
+    // 固定采样10000个点（与梯度下降优化保持一致）
+    size_t num_to_check = std::min(10000UL, num_vertices);
     if (num_to_check == 0) {
         num_to_check = 1;  // 至少检查1个点
     }
     
-    // 计算步长，确保均匀分布检查500个顶点
+    // 计算步长，确保均匀分布检查10000个顶点
     size_t step = num_vertices / num_to_check;
     if (step == 0) step = 1;
     
@@ -629,11 +684,8 @@ double MeshMatcher::computeWrappingRatio(
     std::vector<Eigen::Vector3d> points_to_check;
     points_to_check.reserve(num_to_check);
     
-    // 使用时间戳作为随机种子，确保每次调用都选择不同的点
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    std::uniform_int_distribution<size_t> start_offset_dist(0, step - 1);
-    size_t start_offset = start_offset_dist(gen);
+    // 使用固定起始偏移，确保每次调用选择相同的500个点（与前端查看/调试一致）
+    size_t start_offset = 0;
     
     for (size_t i = start_offset * 3; i < target_vertices.size(); i += 3 * step) {
         points_to_check.push_back(Eigen::Vector3d(
@@ -739,17 +791,13 @@ double MeshMatcher::optimizePositionAndRotation(
     double& optimal_vertical_offset,
     const GradientDescentParams& params) {
     
-    // 使用3D梯度下降同时优化平移、旋转和垂直位移
+    // 使用2D梯度下降同时优化平移和旋转
     // 前提：纵向轴已经对齐（固定不动）
     // 优化参数：
     // 1. 沿纵向轴的相对前后位移（粗胚相对鞋模的位移）
     // 2. 绕纵向轴的相对旋转角度（粗胚相对鞋模的旋转）
-    // 3. 垂直于纵向轴和横向轴的上下位移（粗胚相对鞋模的垂直位移）
     
-    // 计算垂直轴（上下方向）
-    Eigen::Vector3d vertical_axis = computeVerticalAxis(candidate_vertices, candidate_faces);
-    
-    // 计算初始位置（质心差在纵向轴和垂直轴上的投影）
+    // 计算初始位置（质心差在纵向轴上的投影）
     Eigen::Vector3d target_center(0, 0, 0);
     size_t target_count = target_vertices.size() / 3;
     for (size_t i = 0; i < target_vertices.size(); i += 3) {
@@ -770,16 +818,14 @@ double MeshMatcher::optimizePositionAndRotation(
     
     Eigen::Vector3d center_diff = target_center - candidate_center;
     double current_offset = center_diff.dot(longitudinal_axis);
-    double current_vertical_offset = center_diff.dot(vertical_axis);  // 初始垂直位移
     double current_relative_angle = 0.0;  // 初始相对旋转角度为0
+    double current_vertical_offset = 0.0;  // 垂直位移固定为0
     
     // 使用传入的梯度下降参数
     double learning_rate_translation = params.learning_rate_translation;
     double learning_rate_rotation = params.learning_rate_rotation;
-    double learning_rate_vertical = params.learning_rate_vertical;
     double h_translation = params.h_translation;
     double h_rotation = params.h_rotation;
-    double h_vertical = params.h_vertical;
     int max_iterations = params.max_iterations;
     double convergence_threshold = params.convergence_threshold;
     
@@ -829,26 +875,25 @@ double MeshMatcher::optimizePositionAndRotation(
     // 在纵向轴已对齐的前提下：
     // - offset: 沿纵向轴的相对前后位移（粗胚相对鞋模的位移）
     // - relative_angle_rad: 绕纵向轴的相对旋转角度（粗胚相对鞋模的旋转）
-    // - vertical_offset: 垂直于纵向轴和横向轴的上下位移（粗胚相对鞋模的垂直位移）
     // 注意：使用固定的采样点，确保损失比较有意义
-    auto computeLoss = [&](double offset, double relative_angle_rad, double vertical_offset) -> double {
+    auto computeLoss = [&](double offset, double relative_angle_rad) -> double {
         // 计算粗胚的旋转矩阵（绕纵向轴旋转相对角度）
         Eigen::Matrix3d candidate_rotation = computeRotationMatrixAroundAxis(longitudinal_axis, relative_angle_rad);
         
-        // 变换粗胚：旋转 + 沿纵向轴平移 + 垂直方向平移
+        // 变换粗胚：旋转 + 沿纵向轴平移
         std::vector<double> transformed_candidate = candidate_vertices;
-        Eigen::Vector3d translation = longitudinal_axis * offset + vertical_axis * vertical_offset;
+        Eigen::Vector3d translation = longitudinal_axis * offset;
         
         for (size_t j = 0; j < transformed_candidate.size(); j += 3) {
             Eigen::Vector3d v(transformed_candidate[j], 
                              transformed_candidate[j+1], 
                              transformed_candidate[j+2]);
             
-            // 先平移到质心，旋转，再平移回去，最后沿纵向轴和垂直轴平移
+            // 先平移到质心，旋转，再平移回去，最后沿纵向轴平移
             v -= candidate_center;
             v = candidate_rotation * v;  // 绕纵向轴旋转（相对角度）
             v += candidate_center;
-            v += translation;  // 沿纵向轴和垂直轴平移（相对位移）
+            v += translation;  // 沿纵向轴平移（相对位移）
             
             transformed_candidate[j] = v[0];
             transformed_candidate[j+1] = v[1];
@@ -885,62 +930,52 @@ double MeshMatcher::optimizePositionAndRotation(
         return 1.0 - wrapping;  // 损失 = 1 - 包裹率
     };
     
-    // 3D梯度下降迭代
-    std::cerr << "[LOG] optimizePositionAndRotation: 开始3D梯度下降（纵向位移+相对旋转+垂直位移），最大迭代次数: " << max_iterations << std::endl;
+    // 2D梯度下降迭代
+    std::cerr << "[LOG] optimizePositionAndRotation: 开始2D梯度下降（纵向位移+相对旋转），最大迭代次数: " << max_iterations << std::endl;
     std::cerr << "[LOG] optimizePositionAndRotation: 前提条件：纵向轴已对齐（固定不动）" << std::endl;
     for (int iter = 0; iter < max_iterations; ++iter) {
         auto iter_start = std::chrono::high_resolution_clock::now();
         
         // 计算纵向平移方向的梯度（沿纵向轴的相对位移）
-        double loss_plus_t = computeLoss(current_offset + h_translation, current_relative_angle, current_vertical_offset);
-        double loss_minus_t = computeLoss(current_offset - h_translation, current_relative_angle, current_vertical_offset);
+        double loss_plus_t = computeLoss(current_offset + h_translation, current_relative_angle);
+        double loss_minus_t = computeLoss(current_offset - h_translation, current_relative_angle);
         double gradient_translation = (loss_plus_t - loss_minus_t) / (2.0 * h_translation);
         
         // 计算旋转方向的梯度（绕纵向轴的相对旋转）
-        double loss_plus_r = computeLoss(current_offset, current_relative_angle + h_rotation, current_vertical_offset);
-        double loss_minus_r = computeLoss(current_offset, current_relative_angle - h_rotation, current_vertical_offset);
+        double loss_plus_r = computeLoss(current_offset, current_relative_angle + h_rotation);
+        double loss_minus_r = computeLoss(current_offset, current_relative_angle - h_rotation);
         double gradient_rotation = (loss_plus_r - loss_minus_r) / (2.0 * h_rotation);
         
-        // 计算垂直位移方向的梯度（垂直于纵向轴和横向轴的上下位移）
-        double loss_plus_v = computeLoss(current_offset, current_relative_angle, current_vertical_offset + h_vertical);
-        double loss_minus_v = computeLoss(current_offset, current_relative_angle, current_vertical_offset - h_vertical);
-        double gradient_vertical = (loss_plus_v - loss_minus_v) / (2.0 * h_vertical);
-        
-        // 检查收敛（三个方向的梯度都很小）
+        // 检查收敛（两个方向的梯度都很小）
         if (std::abs(gradient_translation) < convergence_threshold && 
-            std::abs(gradient_rotation) < convergence_threshold &&
-            std::abs(gradient_vertical) < convergence_threshold) {
+            std::abs(gradient_rotation) < convergence_threshold) {
             std::cerr << "[LOG] optimizePositionAndRotation: 收敛，纵向位移梯度: " << gradient_translation 
-                      << ", 相对旋转梯度: " << gradient_rotation
-                      << ", 垂直位移梯度: " << gradient_vertical << std::endl;
+                      << ", 相对旋转梯度: " << gradient_rotation << std::endl;
             break;
         }
         
-        // 更新位置、相对角度和垂直位移
+        // 更新位置和相对角度
         double new_offset = current_offset - learning_rate_translation * gradient_translation;
         double new_relative_angle = current_relative_angle - learning_rate_rotation * gradient_rotation;
-        double new_vertical_offset = current_vertical_offset - learning_rate_vertical * gradient_vertical;
         
         // 限制相对旋转角度范围（±180度）
         if (new_relative_angle > M_PI) new_relative_angle -= 2 * M_PI;
         if (new_relative_angle < -M_PI) new_relative_angle += 2 * M_PI;
         
         // 检查新位置的损失是否更小
-        double new_loss = computeLoss(new_offset, new_relative_angle, new_vertical_offset);
-        double current_loss = computeLoss(current_offset, current_relative_angle, current_vertical_offset);
+        double new_loss = computeLoss(new_offset, new_relative_angle);
+        double current_loss = computeLoss(current_offset, current_relative_angle);
         
         bool accepted = false;
         if (new_loss < current_loss) {
             current_offset = new_offset;
             current_relative_angle = new_relative_angle;
-            current_vertical_offset = new_vertical_offset;
             accepted = true;
         } else {
             // 如果损失没有改善，减小学习率
             learning_rate_translation *= 0.5;
             learning_rate_rotation *= 0.5;
-            learning_rate_vertical *= 0.5;
-            if (learning_rate_translation < 0.01 || learning_rate_rotation < 0.001 || learning_rate_vertical < 0.01) {
+            if (learning_rate_translation < 0.01 || learning_rate_rotation < 0.001) {
                 std::cerr << "[LOG] optimizePositionAndRotation: 学习率太小，退出" << std::endl;
                 break;
             }
@@ -950,7 +985,6 @@ double MeshMatcher::optimizePositionAndRotation(
         if (new_loss < 1e-6) {
             current_offset = new_offset;
             current_relative_angle = new_relative_angle;
-            current_vertical_offset = new_vertical_offset;
             std::cerr << "[LOG] optimizePositionAndRotation: 达到100%包裹率，提前退出" << std::endl;
             break;
         }
@@ -962,15 +996,13 @@ double MeshMatcher::optimizePositionAndRotation(
                   << ", 新损失: " << new_loss 
                   << (accepted ? " ✅接受" : " ❌拒绝（减小学习率）")
                   << ", 纵向位移梯度: " << gradient_translation 
-                  << ", 相对旋转梯度: " << gradient_rotation
-                  << ", 垂直位移梯度: " << gradient_vertical << std::endl;
+                  << ", 相对旋转梯度: " << gradient_rotation << std::endl;
     }
     
     optimal_relative_rotation_angle_rad = current_relative_angle;
-    optimal_vertical_offset = current_vertical_offset;
+    optimal_vertical_offset = 0.0;  // 垂直位移固定为0
     std::cerr << "[LOG] optimizePositionAndRotation: 完成，最优纵向位移: " << current_offset 
-              << "mm, 最优相对旋转角度: " << (current_relative_angle * 180.0 / M_PI) << "度"
-              << ", 最优垂直位移: " << current_vertical_offset << "mm" << std::endl;
+              << "mm, 最优相对旋转角度: " << (current_relative_angle * 180.0 / M_PI) << "度" << std::endl;
     return current_offset;
 }
 
@@ -1026,14 +1058,13 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     auto dt_axis = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 3: 计算纵向轴耗时: " << dt_axis << "ms" << std::endl;
     
-    // 4. 使用3D梯度下降同时优化相对位移、相对旋转和垂直位移
+    // 4. 使用2D梯度下降同时优化相对位移和相对旋转
     // 前提：纵向轴已对齐（固定不动）
     // 优化参数：
     //   1. 沿纵向轴的相对前后位移（粗胚相对鞋模）
     //   2. 绕纵向轴的相对旋转角度（粗胚相对鞋模）
-    //   3. 垂直于纵向轴和横向轴的上下位移（粗胚相对鞋模）
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 4: 开始3D梯度下降优化（纵向位移+相对旋转+垂直位移）..." << std::endl;
+    std::cerr << "[LOG] Step 4: 开始2D梯度下降优化（纵向位移+相对旋转）..." << std::endl;
     double optimal_relative_rotation_angle_rad = 0.0;
     double optimal_vertical_offset = 0.0;
     result.optimal_translation = optimizePositionAndRotation(
@@ -1046,17 +1077,14 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     );
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_optimize = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 4: 3D梯度下降优化耗时: " << dt_optimize << "ms" << std::endl;
+    std::cerr << "[LOG] Step 4: 2D梯度下降优化耗时: " << dt_optimize << "ms" << std::endl;
     
-    // 5. 应用最优相对平移、相对旋转和垂直位移
+    // 5. 应用最优相对平移和相对旋转
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 5: 开始应用最优相对平移、相对旋转和垂直位移..." << std::endl;
+    std::cerr << "[LOG] Step 5: 开始应用最优相对平移和相对旋转..." << std::endl;
     
     // 计算旋转矩阵（用于最终变换粗胚）
     Eigen::Matrix3d final_rotation_matrix = computeRotationMatrixAroundAxis(longitudinal_axis, optimal_relative_rotation_angle_rad);
-    
-    // 计算垂直轴（用于垂直位移）
-    Eigen::Vector3d vertical_axis = computeVerticalAxis(candidate_vertices_, candidate_faces_);
     
     // 计算候选网格质心（用于旋转）
     Eigen::Vector3d candidate_center(0, 0, 0);
@@ -1069,18 +1097,18 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     candidate_center /= candidate_count;
     
     std::vector<double> optimized_candidate = candidate_vertices_;
-    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation + vertical_axis * optimal_vertical_offset;
+    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation;  // 只沿纵向轴平移
     
     for (size_t i = 0; i < optimized_candidate.size(); i += 3) {
         Eigen::Vector3d v(optimized_candidate[i], 
                          optimized_candidate[i+1], 
                          optimized_candidate[i+2]);
         
-        // 先平移到质心，旋转，再平移回去，最后沿纵向轴和垂直轴平移
+        // 先平移到质心，旋转，再平移回去，最后沿纵向轴平移
         v -= candidate_center;
         v = final_rotation_matrix * v;  // 绕纵向轴旋转
         v += candidate_center;
-        v += translation;  // 沿纵向轴和垂直轴平移
+        v += translation;  // 沿纵向轴平移
         
         optimized_candidate[i] = v[0];
         optimized_candidate[i+1] = v[1];
