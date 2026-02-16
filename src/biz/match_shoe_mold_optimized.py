@@ -345,6 +345,38 @@ def main():
         help='采样点数量（默认: 500）'
     )
     
+    # Adam优化器参数
+    parser.add_argument(
+        '--use-adam',
+        action='store_true',
+        default=True,
+        help='使用Adam优化器（默认: True）'
+    )
+    parser.add_argument(
+        '--no-adam',
+        dest='use_adam',
+        action='store_false',
+        help='不使用Adam优化器，使用标准梯度下降'
+    )
+    parser.add_argument(
+        '--beta1',
+        type=float,
+        default=0.9,
+        help='Adam动量衰减率（默认: 0.9）'
+    )
+    parser.add_argument(
+        '--beta2',
+        type=float,
+        default=0.999,
+        help='Adam二阶矩衰减率（默认: 0.999）'
+    )
+    parser.add_argument(
+        '--epsilon',
+        type=float,
+        default=1e-8,
+        help='Adam数值稳定性参数（默认: 1e-8）'
+    )
+    
     args = parser.parse_args()
     
     testcase_dir = Path(args.testcase_dir)
@@ -363,6 +395,11 @@ def main():
     gd_params.max_iterations = args.max_iterations
     gd_params.convergence_threshold = args.convergence_threshold
     gd_params.num_sample_points = args.num_sample_points
+    # Adam优化器参数
+    gd_params.use_adam = args.use_adam
+    gd_params.beta1 = args.beta1
+    gd_params.beta2 = args.beta2
+    gd_params.epsilon = args.epsilon
     
     result = match_testcase_optimized(
         testcase_dir,

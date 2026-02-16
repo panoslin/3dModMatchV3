@@ -29,16 +29,26 @@ struct GradientDescentParams {
     double convergence_threshold;      // 收敛阈值
     size_t num_sample_points;          // 采样点数量
     
+    // Adam优化器参数
+    bool use_adam;                     // 是否使用Adam优化器
+    double beta1;                      // Adam动量衰减率（默认0.9）
+    double beta2;                      // Adam二阶矩衰减率（默认0.999）
+    double epsilon;                    // Adam数值稳定性参数（默认1e-8）
+    
     GradientDescentParams() 
         : learning_rate_translation(0.2),
           learning_rate_rotation(0.05),
           learning_rate_vertical(0.2),
-          h_translation(0.5),          // 从 0.1 增大到 0.5mm，提高梯度估计精度
-          h_rotation(0.05),            // 从 0.01 增大到 0.05弧度（约2.9度），提高梯度估计精度
+          h_translation(0.1),
+          h_rotation(0.01),
           h_vertical(0.1),
           max_iterations(50),
           convergence_threshold(0.001),
-          num_sample_points(10000) {}  // 从 500 增加到 10000，使损失函数更平滑
+          num_sample_points(500),
+          use_adam(true),              // 默认使用Adam
+          beta1(0.9),
+          beta2(0.999),
+          epsilon(1e-8) {}
 };
 
 struct MatchResult {
