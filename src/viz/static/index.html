@@ -930,7 +930,9 @@
             if (btn) btn.textContent = '播放';
         }
 
-        function buildCandidateMatrix(pivot, axisLong, lateralAxis, translationMm, rotationDeg, lateralMm) {
+        // 构建“粗胚相对鞋模”的变换矩阵 M（以粗胚质心为枢轴）
+        // 注意：在回放时我们会对鞋模应用 M 的逆矩阵，这样视觉上就是“鞋模绕着粗胚运动”。
+        function buildRelativeMatrix(pivot, axisLong, lateralAxis, translationMm, rotationDeg, lateralMm) {
             const angleRad = rotationDeg * Math.PI / 180.0;
 
             const tVec = axisLong.clone().multiplyScalar(translationMm)
@@ -947,7 +949,7 @@
         }
 
         function applyReplayState(idx) {
-            if (!replayDataCache || !generationHistory || !candidateMesh) return;
+            if (!replayDataCache || !generationHistory || !targetMesh) return;
             const state = generationHistory[idx];
             if (!state) return;
 
@@ -955,7 +957,8 @@
             const axisLong = new THREE.Vector3(...replayDataCache.longitudinal_axis).normalize();
             const lateralAxis = new THREE.Vector3(...replayDataCache.axes.candidate_original.lateral_axis).normalize();
 
-            const M = buildCandidateMatrix(
+            // M: 将粗胚从基准姿态变换到该代的最优相对姿态
+            const M = buildRelativeMatrix(
                 pivot,
                 axisLong,
                 lateralAxis,
@@ -964,9 +967,11 @@
                 Number(state.lateral_offset || 0)
             );
 
-            candidateMesh.matrixAutoUpdate = false;
-            candidateMesh.matrix.copy(M);
-            candidateMesh.updateMatrixWorld(true);
+            // 为了表现“鞋模相对粗胚在动”，我们对鞋模应用 M 的逆矩阵，粗胚保持不动
+            const Minv = new THREE.Matrix4().copy(M).invert();
+            targetMesh.matrixAutoUpdate = false;
+            targetMesh.matrix.copy(Minv);
+            targetMesh.updateMatrixWorld(true);
 
             // 更新 UI
             const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -992,7 +997,7 @@
                 const pivot = new THREE.Vector3(...data.candidate_center);
                 const axisLong = new THREE.Vector3(...data.longitudinal_axis).normalize();
                 const lateralAxis = new THREE.Vector3(...data.axes.candidate_original.lateral_axis).normalize();
-                const M = buildCandidateMatrix(
+                const M = buildRelativeMatrix(
                     pivot,
                     axisLong,
                     lateralAxis,
@@ -1000,9 +1005,10 @@
                     Number(data.match_result.optimal_rotation_angle_deg || 0),
                     Number(data.match_result.optimal_lateral_offset || 0)
                 );
-                candidateMesh.matrixAutoUpdate = false;
-                candidateMesh.matrix.copy(M);
-                candidateMesh.updateMatrixWorld(true);
+                const Minv = new THREE.Matrix4().copy(M).invert();
+                targetMesh.matrixAutoUpdate = false;
+                targetMesh.matrix.copy(Minv);
+                targetMesh.updateMatrixWorld(true);
                 return;
             }
 
