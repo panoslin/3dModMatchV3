@@ -393,6 +393,11 @@
         let candidateAxisGroup = null;  // 粗胚坐标轴组
         let viewModeAxisGroup = null;  // 查看模式的轴组
         let outsidePointsGroup = null; // 粗胚外采样点
+        // 回放相关
+        let generationHistory = null;
+        let replayDataCache = null;
+        let replayTimer = null;
+        let replayIsPlaying = false;
         const viewer = document.getElementById('viewer');
         const fileInput = document.getElementById('fileInput');
         const fileLabel = document.getElementById('fileLabel');
@@ -752,6 +757,10 @@
         function displayMatchResult(data) {
             infoSection.style.display = 'block';
             const match = data.match_result;
+            const hasReplay = match.generation_history && match.generation_history.length > 0;
+            const lateral = (match.optimal_lateral_offset !== undefined && match.optimal_lateral_offset !== null)
+                ? Number(match.optimal_lateral_offset)
+                : 0.0;
             infoContent.innerHTML = `
                 <div class="info-item">
                     <strong>匹配结果</strong>
@@ -770,6 +779,10 @@
                     <span>${match.optimal_translation.toFixed(4)}</span>
                 </div>
                 <div class="info-item">
+                    <strong>横向位移</strong>
+                    <span>${lateral.toFixed(4)}</span>
+                </div>
+                <div class="info-item">
                     <strong>旋转角度</strong>
                     <span>${match.optimal_rotation_angle_deg.toFixed(2)}°</span>
                 </div>
@@ -781,6 +794,23 @@
                     <strong>穿模检测</strong>
                     <span>${match.has_penetration ? '❌ 有穿模' : '✅ 无穿模'}</span>
                 </div>
+                ${hasReplay ? `
+                <div class="info-item" style="border-left-color:#764ba2;">
+                    <strong>回放（GA 每代最优解）</strong>
+                    <div style="margin-top:8px;">
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button id="replayPlayBtn" class="btn" style="width:auto; padding:6px 10px; margin-top:0;">播放</button>
+                            <span style="color:#666; font-size:0.9em;">代数: <span id="replayGenLabel">-</span> / ${match.generation_history.length - 1}</span>
+                        </div>
+                        <input id="replaySlider" type="range" min="0" max="${match.generation_history.length - 1}" value="${match.generation_history.length - 1}" style="width:100%; margin-top:10px;">
+                        <div style="margin-top:8px; color:#666; font-size:0.9em; line-height:1.4;">
+                            <div>best: <span id="replayBest">-</span> | avg: <span id="replayAvg">-</span> | std: <span id="replayStd">-</span></div>
+                            <div>Δ: t=<span id="replayT">-</span>mm, rot=<span id="replayRot">-</span>°, lat=<span id="replayLat">-</span>mm</div>
+                            <div>ops: xover=<span id="replayXover">-</span>, mut=<span id="replayMut">-</span>, time=<span id="replayTime">-</span>ms</div>
+                        </div>
+                    </div>
+                </div>
+                ` : ''}
             `;
         }
 
@@ -808,9 +838,9 @@
             targetMesh.material.depthWrite = true;  // 深度写入
             scene.add(targetMesh);
             
-            // 加载转换后的候选（粗胚）- 蓝色半透明
+            // 加载候选（粗胚，原始几何）- 蓝色半透明
             const candidateGeometry = new THREE.BufferGeometry();
-            const candidateVertices = new Float32Array(data.candidate_vertices_transformed.flat());
+            const candidateVertices = new Float32Array(data.candidate_vertices.flat());
             candidateGeometry.setAttribute('position', new THREE.BufferAttribute(candidateVertices, 3));
             const candidateIndices = new Uint32Array(data.candidate_faces.flat());
             candidateGeometry.setIndex(new THREE.BufferAttribute(candidateIndices, 1));
@@ -827,6 +857,9 @@
             candidateMesh.renderOrder = 2;  // 后渲染
             candidateMesh.material.depthWrite = false;  // 避免深度冲突
             scene.add(candidateMesh);
+
+            // 默认将候选变换到“最终最优解”（可回放时为最后一代）
+            setupReplay(data);
             
             // 计算边界框并调整相机
             targetGeometry.computeBoundingBox();
@@ -885,6 +918,127 @@
 
             // 可视化粗胚外的采样点
             visualizeOutsidePoints(maxDim);
+        }
+
+        function stopReplay() {
+            replayIsPlaying = false;
+            if (replayTimer) {
+                clearInterval(replayTimer);
+                replayTimer = null;
+            }
+            const btn = document.getElementById('replayPlayBtn');
+            if (btn) btn.textContent = '播放';
+        }
+
+        function buildCandidateMatrix(pivot, axisLong, lateralAxis, translationMm, rotationDeg, lateralMm) {
+            const angleRad = rotationDeg * Math.PI / 180.0;
+
+            const tVec = axisLong.clone().multiplyScalar(translationMm)
+                .add(lateralAxis.clone().multiplyScalar(lateralMm));
+
+            const T1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
+            const R = new THREE.Matrix4().makeRotationAxis(axisLong, angleRad);
+            const T2 = new THREE.Matrix4().makeTranslation(pivot.x + tVec.x, pivot.y + tVec.y, pivot.z + tVec.z);
+
+            const M = new THREE.Matrix4();
+            M.multiplyMatrices(T2, R);
+            M.multiply(T1);
+            return M;
+        }
+
+        function applyReplayState(idx) {
+            if (!replayDataCache || !generationHistory || !candidateMesh) return;
+            const state = generationHistory[idx];
+            if (!state) return;
+
+            const pivot = new THREE.Vector3(...replayDataCache.candidate_center);
+            const axisLong = new THREE.Vector3(...replayDataCache.longitudinal_axis).normalize();
+            const lateralAxis = new THREE.Vector3(...replayDataCache.axes.candidate_original.lateral_axis).normalize();
+
+            const M = buildCandidateMatrix(
+                pivot,
+                axisLong,
+                lateralAxis,
+                Number(state.translation || 0),
+                Number(state.rotation_angle_deg || 0),
+                Number(state.lateral_offset || 0)
+            );
+
+            candidateMesh.matrixAutoUpdate = false;
+            candidateMesh.matrix.copy(M);
+            candidateMesh.updateMatrixWorld(true);
+
+            // 更新 UI
+            const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            setText('replayGenLabel', String(state.generation ?? idx));
+            setText('replayBest', ((state.best_fitness ?? 0) * 100).toFixed(2) + '%');
+            setText('replayAvg', ((state.avg_fitness ?? 0) * 100).toFixed(2) + '%');
+            setText('replayStd', (state.std_dev ?? 0).toFixed(4));
+            setText('replayT', (state.translation ?? 0).toFixed(2));
+            setText('replayRot', (state.rotation_angle_deg ?? 0).toFixed(2));
+            setText('replayLat', (state.lateral_offset ?? 0).toFixed(2));
+            setText('replayXover', String(state.crossover_count ?? 0));
+            setText('replayMut', String(state.mutation_count ?? 0));
+            setText('replayTime', (state.time_ms ?? 0).toFixed(1));
+        }
+
+        function setupReplay(data) {
+            stopReplay();
+            replayDataCache = data;
+            generationHistory = (data.match_result && data.match_result.generation_history) ? data.match_result.generation_history : null;
+
+            // 如果没有 history，就按最终结果设置一次矩阵
+            if (!generationHistory || generationHistory.length === 0) {
+                const pivot = new THREE.Vector3(...data.candidate_center);
+                const axisLong = new THREE.Vector3(...data.longitudinal_axis).normalize();
+                const lateralAxis = new THREE.Vector3(...data.axes.candidate_original.lateral_axis).normalize();
+                const M = buildCandidateMatrix(
+                    pivot,
+                    axisLong,
+                    lateralAxis,
+                    Number(data.match_result.optimal_translation || 0),
+                    Number(data.match_result.optimal_rotation_angle_deg || 0),
+                    Number(data.match_result.optimal_lateral_offset || 0)
+                );
+                candidateMesh.matrixAutoUpdate = false;
+                candidateMesh.matrix.copy(M);
+                candidateMesh.updateMatrixWorld(true);
+                return;
+            }
+
+            const slider = document.getElementById('replaySlider');
+            const playBtn = document.getElementById('replayPlayBtn');
+            if (!slider || !playBtn) {
+                // 还没渲染回放 UI（例如未调用 displayMatchResult），仍然应用最后一代
+                applyReplayState(generationHistory.length - 1);
+                return;
+            }
+
+            const maxIdx = generationHistory.length - 1;
+            slider.min = '0';
+            slider.max = String(maxIdx);
+            slider.value = String(maxIdx);
+            applyReplayState(maxIdx);
+
+            slider.oninput = () => {
+                stopReplay();
+                applyReplayState(Number(slider.value));
+            };
+
+            playBtn.onclick = () => {
+                if (replayIsPlaying) {
+                    stopReplay();
+                    return;
+                }
+                replayIsPlaying = true;
+                playBtn.textContent = '暂停';
+                replayTimer = setInterval(() => {
+                    let v = Number(slider.value);
+                    v = (v >= maxIdx) ? 0 : (v + 1);
+                    slider.value = String(v);
+                    applyReplayState(v);
+                }, 250);
+            };
         }
         
         // 可视化轴（使用与查看模式相同的样式）

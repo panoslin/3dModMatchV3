@@ -51,6 +51,72 @@ struct GradientDescentParams {
           epsilon(1e-8) {}
 };
 
+// 优化算法类型
+enum class OptimizationAlgorithm {
+    GRADIENT_DESCENT,  // 梯度下降（当前方法）
+    GENETIC_ALGORITHM, // 遗传算法（推荐）
+    PARTICLE_SWARM,    // 粒子群优化
+    MULTI_START        // 多起点优化
+};
+
+// 遗传算法参数
+struct GeneticAlgorithmParams {
+    int population_size;        // 种群大小（默认50）
+    int max_generations;        // 最大代数（默认30）
+    double crossover_rate;      // 交叉率（默认0.8）
+    double mutation_rate;        // 变异率（默认0.1）
+    double mutation_scale;       // 变异幅度（默认0.1）
+    double selection_rate;       // 选择率（保留前N%）（默认0.5）
+    double convergence_threshold; // 收敛阈值（默认1e-4）
+    size_t num_sample_points;    // 采样点数量（默认500）
+    
+    // 搜索范围
+    double translation_range;    // 纵向位移搜索范围（mm，默认±50）
+    double rotation_range;       // 旋转角度搜索范围（弧度，默认±π）
+    double vertical_range;       // 垂直位移搜索范围（mm，默认±20）
+    double lateral_range;        // 横向位移搜索范围（mm，默认±30）
+    
+    GeneticAlgorithmParams()
+        : population_size(50),
+          max_generations(30),
+          crossover_rate(0.8),
+          mutation_rate(0.1),
+          mutation_scale(0.1),
+          selection_rate(0.5),
+          convergence_threshold(1e-4),
+          num_sample_points(500),
+          translation_range(50.0),
+          rotation_range(3.14159265358979323846),  // M_PI
+          vertical_range(20.0),
+          lateral_range(30.0) {}
+};
+
+// 用于“回放”的每代状态（遗传算法）
+struct GenerationState {
+    int generation;            // 代数（从 0 开始：0表示初始种群评估完成）
+    double best_fitness;       // 最佳适应度（= 包裹率近似值）
+    double avg_fitness;        // 平均适应度
+    double std_dev;            // 适应度标准差
+    double translation;        // 纵向位移（mm）
+    double rotation_angle_deg; // 旋转角度（度）
+    double lateral_offset;     // 横向位移（mm）
+    int crossover_count;       // 本代交叉次数
+    int mutation_count;        // 本代变异次数
+    double time_ms;            // 本代耗时（ms）
+
+    GenerationState()
+        : generation(0),
+          best_fitness(0.0),
+          avg_fitness(0.0),
+          std_dev(0.0),
+          translation(0.0),
+          rotation_angle_deg(0.0),
+          lateral_offset(0.0),
+          crossover_count(0),
+          mutation_count(0),
+          time_ms(0.0) {}
+};
+
 struct MatchResult {
     int candidate_index;
     std::string candidate_path;
@@ -66,13 +132,18 @@ struct MatchResult {
     double optimal_translation;               // 最优前后位置平移量（沿纵向轴）
     double optimal_rotation_angle_deg;       // 最优绕纵向轴旋转角度（度）
     double optimal_vertical_offset;          // 最优垂直位移（垂直于纵向轴和横向轴，mm）
+    double optimal_lateral_offset;           // 最优横向位移（沿横向轴，mm）
     bool meets_direction_constraints;         // 是否满足方向约束
+
+    // 回放：遗传算法每代状态（只在使用 GA 时填充）
+    std::vector<GenerationState> generation_history;
     
     MatchResult() : candidate_index(-1), volume(0.0), 
                    normal_alignment_score(0.0), is_fully_wrapped(false),
                    has_penetration(true), match_score(0.0),
                    wrapping_ratio(0.0), optimal_translation(0.0),
                    optimal_rotation_angle_deg(0.0), optimal_vertical_offset(0.0),
+                   optimal_lateral_offset(0.0),
                    meets_direction_constraints(false) {}
 };
 
@@ -89,9 +160,12 @@ public:
     
     // 执行优化匹配（基于生产场景）
     // 注意：方向会自动对齐，不需要 angle_tolerance_deg 参数
+    // 默认使用遗传算法（GA）进行优化
     MatchResult matchOptimized(double penetration_tolerance = 0.01,
                               double wrapping_threshold = 1.0,
-                              const GradientDescentParams& gd_params = GradientDescentParams());
+                              const GradientDescentParams& gd_params = GradientDescentParams(),
+                              const GeneticAlgorithmParams& ga_params = GeneticAlgorithmParams(),
+                              bool use_genetic_algorithm = true);  // 默认使用GA
     
     // 计算网格体积
     static double computeVolume(const std::vector<double>& vertices,
@@ -148,6 +222,38 @@ public:
         double& optimal_relative_rotation_angle_rad,
         double& optimal_vertical_offset,
         const GradientDescentParams& params = GradientDescentParams());
+    
+    // 使用遗传算法优化位置和旋转（推荐：全局搜索，避免局部最优）
+    // 优势：
+    // 1. 全局搜索，不易陷入局部最优
+    // 2. 不需要计算梯度，适合非平滑目标函数
+    // 3. 可以并行评估多个候选解
+    double optimizePositionAndRotationGA(
+        const std::vector<double>& target_vertices,
+        const std::vector<int>& target_faces,
+        const std::vector<double>& candidate_vertices,
+        const std::vector<int>& candidate_faces,
+        const Eigen::Vector3d& longitudinal_axis,
+        const Eigen::Vector3d& vertical_axis,
+        double& optimal_relative_rotation_angle_rad,
+        double& optimal_vertical_offset,
+        double& optimal_lateral_offset,
+        const GeneticAlgorithmParams& params = GeneticAlgorithmParams());
+    
+    // 使用粒子群优化（PSO）优化位置和旋转
+    // 优势：收敛速度快，适合连续优化问题
+    double optimizePositionAndRotationPSO(
+        const std::vector<double>& target_vertices,
+        const std::vector<int>& target_faces,
+        const std::vector<double>& candidate_vertices,
+        const std::vector<int>& candidate_faces,
+        const Eigen::Vector3d& longitudinal_axis,
+        const Eigen::Vector3d& vertical_axis,
+        double& optimal_relative_rotation_angle_rad,
+        double& optimal_vertical_offset,
+        int max_iterations = 30,
+        int swarm_size = 30,
+        size_t num_sample_points = 500);
     
 private:
     // 计算法线对齐分数

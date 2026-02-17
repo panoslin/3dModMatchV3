@@ -342,8 +342,12 @@ def match_files():
         
         R_rotate = np.eye(3) + sin_a * K + (1 - cos_a) * np.dot(K, K)
         
-        # 计算平移向量（沿纵向轴）
-        translation_vec = longitudinal_axis * result.optimal_translation
+        # 计算平移向量（沿纵向轴 + 横向轴）
+        # 注意：当前 GA 优化维度 = 纵向位移 + 旋转角度 + 横向位移（垂直位移固定为0）
+        candidate_lateral_axis = np.cross(longitudinal_axis, candidate_vertical_axis)
+        if np.linalg.norm(candidate_lateral_axis) > 0:
+            candidate_lateral_axis = candidate_lateral_axis / np.linalg.norm(candidate_lateral_axis)
+        translation_vec = longitudinal_axis * result.optimal_translation + candidate_lateral_axis * float(getattr(result, 'optimal_lateral_offset', 0.0))
         
         # 构建 4x4 齐次变换矩阵
         # 注意：match_optimized 内部已经对齐了方向，所以这里只需要旋转和平移
@@ -384,6 +388,26 @@ def match_files():
         candidate_lateral_axis_transformed = candidate_lateral_axis_transformed / np.linalg.norm(candidate_lateral_axis_transformed)
         
         # 返回结果
+        # 生成 GA 每代历史（用于前端回放）
+        generation_history = []
+        if hasattr(result, 'generation_history') and result.generation_history is not None:
+            try:
+                for s in result.generation_history:
+                    generation_history.append({
+                        'generation': int(getattr(s, 'generation', 0)),
+                        'best_fitness': float(getattr(s, 'best_fitness', 0.0)),
+                        'avg_fitness': float(getattr(s, 'avg_fitness', 0.0)),
+                        'std_dev': float(getattr(s, 'std_dev', 0.0)),
+                        'translation': float(getattr(s, 'translation', 0.0)),
+                        'rotation_angle_deg': float(getattr(s, 'rotation_angle_deg', 0.0)),
+                        'lateral_offset': float(getattr(s, 'lateral_offset', 0.0)),
+                        'crossover_count': int(getattr(s, 'crossover_count', 0)),
+                        'mutation_count': int(getattr(s, 'mutation_count', 0)),
+                        'time_ms': float(getattr(s, 'time_ms', 0.0)),
+                    })
+            except Exception as e:
+                print(f"警告: 读取 generation_history 失败: {e}")
+
         return jsonify({
             'success': True,
             'match_result': {
@@ -391,9 +415,12 @@ def match_files():
                 'wrapping_ratio': result.wrapping_ratio,
                 'optimal_translation': result.optimal_translation,
                 'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
+                'optimal_lateral_offset': float(getattr(result, 'optimal_lateral_offset', 0.0)),
                 'is_fully_wrapped': result.is_fully_wrapped,
                 'has_penetration': result.has_penetration,
                 'meets_direction_constraints': result.meets_direction_constraints,
+                'optimization_algorithm': 'ga',
+                'generation_history': generation_history,
                 'direction_alignment': {
                     'heel_toe_alignment': result.direction_alignment.heel_toe_alignment,
                     'vertical_alignment': result.direction_alignment.vertical_alignment,

@@ -36,7 +36,9 @@ def find_optimal_match(
     penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
     verbose: bool = False,
-    gd_params: Optional[mesh_matcher.GradientDescentParams] = None
+    gd_params: Optional[mesh_matcher.GradientDescentParams] = None,
+    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
+    use_genetic_algorithm: bool = True  # 默认使用GA
 ) -> Tuple[Optional[Path], dict]:
     """
     使用优化算法找到最优匹配
@@ -93,7 +95,9 @@ def find_optimal_match(
             result = matcher.match_optimized(
                 penetration_tolerance=penetration_tolerance,
                 wrapping_threshold=wrapping_threshold,
-                gd_params=gd_params
+                gd_params=gd_params if gd_params else mesh_matcher.GradientDescentParams(),
+                ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams(),
+                use_genetic_algorithm=use_genetic_algorithm
             )
             match_time = time.time() - start_time
             
@@ -178,7 +182,9 @@ def match_testcase_optimized(
     penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
     verbose: bool = False,
-    gd_params: Optional[mesh_matcher.GradientDescentParams] = None
+    gd_params: Optional[mesh_matcher.GradientDescentParams] = None,
+    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
+    use_genetic_algorithm: bool = True  # 默认使用GA
 ) -> dict:
     """
     使用优化算法匹配单个测试用例
@@ -223,7 +229,9 @@ def match_testcase_optimized(
             penetration_tolerance=penetration_tolerance,
             wrapping_threshold=wrapping_threshold,
             verbose=verbose,
-            gd_params=gd_params
+            gd_params=gd_params,
+            ga_params=ga_params,
+            use_genetic_algorithm=use_genetic_algorithm
         )
         
         result = {
@@ -377,6 +385,82 @@ def main():
         help='Adam数值稳定性参数（默认: 1e-8）'
     )
     
+    # 算法选择
+    parser.add_argument(
+        '--use-ga',
+        action='store_true',
+        default=True,
+        help='使用遗传算法（默认: True，推荐）'
+    )
+    parser.add_argument(
+        '--use-gd',
+        dest='use_ga',
+        action='store_false',
+        help='使用梯度下降算法（不推荐）'
+    )
+    
+    # 遗传算法参数
+    parser.add_argument(
+        '--ga-population-size',
+        type=int,
+        default=50,
+        help='GA种群大小（默认: 50）'
+    )
+    parser.add_argument(
+        '--ga-max-generations',
+        type=int,
+        default=30,
+        help='GA最大代数（默认: 30）'
+    )
+    parser.add_argument(
+        '--ga-crossover-rate',
+        type=float,
+        default=0.8,
+        help='GA交叉率（默认: 0.8）'
+    )
+    parser.add_argument(
+        '--ga-mutation-rate',
+        type=float,
+        default=0.1,
+        help='GA变异率（默认: 0.1）'
+    )
+    parser.add_argument(
+        '--ga-mutation-scale',
+        type=float,
+        default=0.1,
+        help='GA变异幅度（默认: 0.1）'
+    )
+    parser.add_argument(
+        '--ga-selection-rate',
+        type=float,
+        default=0.5,
+        help='GA选择率（默认: 0.5）'
+    )
+    parser.add_argument(
+        '--ga-translation-range',
+        type=float,
+        default=50.0,
+        help='GA纵向位移搜索范围（mm，默认: ±50）'
+    )
+    parser.add_argument(
+        '--ga-rotation-range',
+        type=float,
+        default=180.0,
+        help='GA旋转角度搜索范围（度，默认: ±180）'
+    )
+    parser.add_argument(
+        '--ga-vertical-range',
+        type=float,
+        default=20.0,
+        help='GA垂直位移搜索范围（mm，默认: ±20）'
+    )
+    parser.add_argument(
+        '--ga-lateral-range',
+        type=float,
+        default=30.0,
+        help='GA横向位移搜索范围（mm，默认: ±30）'
+    )
+    
     args = parser.parse_args()
     
     testcase_dir = Path(args.testcase_dir)
@@ -401,12 +485,36 @@ def main():
     gd_params.beta2 = args.beta2
     gd_params.epsilon = args.epsilon
     
+    # 创建遗传算法参数对象
+    ga_params = mesh_matcher.GeneticAlgorithmParams()
+    ga_params.population_size = args.ga_population_size
+    ga_params.max_generations = args.ga_max_generations
+    ga_params.crossover_rate = args.ga_crossover_rate
+    ga_params.mutation_rate = args.ga_mutation_rate
+    ga_params.mutation_scale = args.ga_mutation_scale
+    ga_params.selection_rate = args.ga_selection_rate
+    ga_params.translation_range = args.ga_translation_range
+    ga_params.rotation_range = args.ga_rotation_range * 3.14159265358979323846 / 180.0  # 度转弧度
+    ga_params.vertical_range = args.ga_vertical_range
+    ga_params.lateral_range = args.ga_lateral_range
+    ga_params.num_sample_points = args.num_sample_points
+    
+    if args.verbose:
+        algorithm_name = "遗传算法 (GA)" if args.use_ga else "梯度下降 (GD)"
+        print(f"\n{'='*70}")
+        print(f"使用算法: {algorithm_name}")
+        if args.use_ga:
+            print(f"GA参数: 种群={ga_params.population_size}, 代数={ga_params.max_generations}")
+        print(f"{'='*70}\n")
+    
     result = match_testcase_optimized(
         testcase_dir,
         penetration_tolerance=args.penetration_tolerance,
         wrapping_threshold=args.wrapping_threshold,
         verbose=args.verbose,
-        gd_params=gd_params
+        gd_params=gd_params,
+        ga_params=ga_params,
+        use_genetic_algorithm=args.use_ga
     )
     
     if 'error' in result:

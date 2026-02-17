@@ -4,11 +4,15 @@
 #include <limits>
 #include <numeric>
 #include <iostream>
+#include <iomanip>
 #include <chrono>
 #include <random>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+// GA 回放：保存最近一次 GA 的每代历史（线程本地，避免并发互相覆盖）
+static thread_local std::vector<GenerationState> g_last_ga_generation_history;
 
 MeshMatcher::MeshMatcher() {
 }
@@ -1028,11 +1032,11 @@ double MeshMatcher::optimizePositionAndRotation(
         } else {
             // 如果损失没有改善，减小学习率（仅对标准梯度下降）
             if (!params.use_adam) {
-                learning_rate_translation *= 0.5;
-                learning_rate_rotation *= 0.5;
-                if (learning_rate_translation < 0.01 || learning_rate_rotation < 0.001) {
-                    std::cerr << "[LOG] optimizePositionAndRotation: 学习率太小，退出" << std::endl;
-                    break;
+            learning_rate_translation *= 0.5;
+            learning_rate_rotation *= 0.5;
+            if (learning_rate_translation < 0.01 || learning_rate_rotation < 0.001) {
+                std::cerr << "[LOG] optimizePositionAndRotation: 学习率太小，退出" << std::endl;
+                break;
                 }
             }
         }
@@ -1066,9 +1070,365 @@ double MeshMatcher::optimizePositionAndRotation(
     return current_offset;
 }
 
+// ========== 遗传算法实现 ==========
+// 个体结构（表示一个候选解）
+struct Individual {
+    double translation;      // 纵向位移
+    double rotation;        // 旋转角度
+    double lateral;         // 横向位移
+    double fitness;         // 适应度（包裹率，越高越好）
+    
+    Individual() : translation(0.0), rotation(0.0), lateral(0.0), fitness(0.0) {}
+    Individual(double t, double r, double l) : translation(t), rotation(r), lateral(l), fitness(0.0) {}
+};
+
+double MeshMatcher::optimizePositionAndRotationGA(
+    const std::vector<double>& target_vertices,
+    const std::vector<int>& target_faces,
+    const std::vector<double>& candidate_vertices,
+    const std::vector<int>& candidate_faces,
+    const Eigen::Vector3d& longitudinal_axis,
+    const Eigen::Vector3d& vertical_axis,
+    double& optimal_relative_rotation_angle_rad,
+    double& optimal_vertical_offset,
+    double& optimal_lateral_offset,
+    const GeneticAlgorithmParams& params) {
+    
+    // 计算横向轴（纵向轴 × 垂直轴）
+    Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
+    
+    std::cerr << "\n" << std::string(70, '=') << std::endl;
+    std::cerr << "[GA] ========== 遗传算法优化开始（3D优化）==========" << std::endl;
+    std::cerr << "[GA] 参数配置:" << std::endl;
+    std::cerr << "[GA]   种群大小: " << params.population_size << std::endl;
+    std::cerr << "[GA]   最大代数: " << params.max_generations << std::endl;
+    std::cerr << "[GA]   交叉率: " << params.crossover_rate << std::endl;
+    std::cerr << "[GA]   变异率: " << params.mutation_rate << std::endl;
+    std::cerr << "[GA]   选择率: " << params.selection_rate << std::endl;
+    std::cerr << "[GA]   采样点数: " << params.num_sample_points << std::endl;
+    std::cerr << "[GA]   搜索范围:" << std::endl;
+    std::cerr << "[GA]     纵向位移: ±" << params.translation_range << "mm" << std::endl;
+    std::cerr << "[GA]     旋转角度: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl;
+    std::cerr << "[GA]     横向位移: ±" << params.lateral_range << "mm" << std::endl;
+    std::cerr << "[GA]   方向轴:" << std::endl;
+    std::cerr << "[GA]     纵向轴: (" << longitudinal_axis[0] << ", " 
+              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl;
+    std::cerr << "[GA]     垂直轴: (" << vertical_axis[0] << ", " 
+              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl;
+    std::cerr << "[GA]     横向轴: (" << lateral_axis[0] << ", " 
+              << lateral_axis[1] << ", " << lateral_axis[2] << ")" << std::endl;
+    std::cerr << std::string(70, '=') << std::endl;
+    
+    // 计算质心（用于变换）
+    Eigen::Vector3d target_center(0, 0, 0);
+    size_t target_count = target_vertices.size() / 3;
+    for (size_t i = 0; i < target_vertices.size(); i += 3) {
+        target_center += Eigen::Vector3d(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
+    }
+    target_center /= target_count;
+    
+    Eigen::Vector3d candidate_center(0, 0, 0);
+    size_t candidate_count = candidate_vertices.size() / 3;
+    for (size_t i = 0; i < candidate_vertices.size(); i += 3) {
+        candidate_center += Eigen::Vector3d(candidate_vertices[i], candidate_vertices[i+1], candidate_vertices[i+2]);
+    }
+    candidate_center /= candidate_count;
+    
+    Eigen::Vector3d center_diff = target_center - candidate_center;
+    double initial_translation = center_diff.dot(longitudinal_axis);
+    double initial_lateral = center_diff.dot(lateral_axis);
+    
+    // 固定采样点
+    size_t num_vertices = target_vertices.size() / 3;
+    size_t num_to_check = std::min(params.num_sample_points, num_vertices);
+    if (num_to_check == 0) num_to_check = 1;
+    size_t step = num_vertices / num_to_check;
+    if (step == 0) step = 1;
+    
+    std::vector<Eigen::Vector3d> fixed_sample_points;
+    fixed_sample_points.reserve(num_to_check);
+    
+    for (size_t i = 0; i < target_vertices.size(); i += 3 * step) {
+        fixed_sample_points.push_back(Eigen::Vector3d(
+            target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
+        if (fixed_sample_points.size() >= num_to_check) break;
+    }
+    
+    // 预先构建基础KD-tree
+    KDTree base_tree;
+    std::vector<Eigen::Vector3d> base_face_centers;
+    std::vector<Eigen::Vector3d> base_face_normals;
+    buildFaceKDTree(candidate_vertices, candidate_faces, base_tree, 
+                   base_face_centers, base_face_normals);
+    
+    // 适应度函数：计算包裹率（纵向位移+旋转+横向位移）
+    auto computeFitness = [&](const Individual& ind) -> double {
+        Eigen::Matrix3d rotation = computeRotationMatrixAroundAxis(longitudinal_axis, ind.rotation);
+        Eigen::Vector3d translation = longitudinal_axis * ind.translation 
+                                     + lateral_axis * ind.lateral;  // 纵向+横向位移
+        
+        // 变换面中心和法线
+        std::vector<Eigen::Vector3d> transformed_face_centers(base_face_centers.size());
+        std::vector<Eigen::Vector3d> transformed_face_normals(base_face_normals.size());
+        for (size_t i = 0; i < base_face_centers.size(); ++i) {
+            Eigen::Vector3d center = base_face_centers[i] - candidate_center;
+            center = rotation * center;
+            center += candidate_center + translation;
+            transformed_face_centers[i] = center;
+            transformed_face_normals[i] = rotation * base_face_normals[i];
+        }
+        
+        // 变换顶点
+        std::vector<double> transformed_vertices(candidate_vertices.size());
+        for (size_t j = 0; j < candidate_vertices.size(); j += 3) {
+            Eigen::Vector3d v(candidate_vertices[j], candidate_vertices[j+1], candidate_vertices[j+2]);
+            v -= candidate_center;
+            v = rotation * v;
+            v += candidate_center + translation;
+            transformed_vertices[j] = v[0];
+            transformed_vertices[j+1] = v[1];
+            transformed_vertices[j+2] = v[2];
+        }
+        
+        // 计算包裹率
+        int inside_count = 0;
+        #ifdef _OPENMP
+        #pragma omp parallel for reduction(+:inside_count)
+        #endif
+        for (size_t idx = 0; idx < fixed_sample_points.size(); ++idx) {
+            double dist = signedDistanceToMeshWithKDTree(
+                fixed_sample_points[idx], transformed_vertices, candidate_faces,
+                base_tree, transformed_face_centers, transformed_face_normals);
+            if (dist <= 0.1) inside_count++;
+        }
+        
+        return static_cast<double>(inside_count) / fixed_sample_points.size();
+    };
+    
+    // 随机数生成器
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> trans_dist(-params.translation_range, params.translation_range);
+    std::uniform_real_distribution<double> rot_dist(-params.rotation_range, params.rotation_range);
+    std::uniform_real_distribution<double> lat_dist(-params.lateral_range, params.lateral_range);
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    
+    // 1. 初始化种群（纵向位移+旋转+横向位移）
+    std::vector<Individual> population(params.population_size);
+    for (int i = 0; i < params.population_size; ++i) {
+        population[i] = Individual(
+            initial_translation + trans_dist(gen),
+            rot_dist(gen),
+            initial_lateral + lat_dist(gen)
+        );
+    }
+    
+    // 2. 评估初始种群
+    auto eval_start = std::chrono::high_resolution_clock::now();
+    std::cerr << "\n[GA] 阶段1: 评估初始种群 (" << params.population_size << " 个个体)..." << std::endl;
+    
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (size_t i = 0; i < population.size(); ++i) {
+        population[i].fitness = computeFitness(population[i]);
+    }
+    
+    // 排序（适应度从高到低）
+    std::sort(population.begin(), population.end(), 
+              [](const Individual& a, const Individual& b) { return a.fitness > b.fitness; });
+    
+    auto eval_end = std::chrono::high_resolution_clock::now();
+    auto eval_time = std::chrono::duration_cast<std::chrono::milliseconds>(eval_end - eval_start).count();
+    
+    double best_fitness = population[0].fitness;
+    Individual best_individual = population[0];
+    double avg_fitness = std::accumulate(population.begin(), population.end(), 0.0,
+        [](double sum, const Individual& ind) { return sum + ind.fitness; }) / params.population_size;
+    
+    std::cerr << "[GA] ✓ 初始种群评估完成，耗时: " << eval_time << "ms" << std::endl;
+    std::cerr << "[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl;
+    std::cerr << "[GA]   平均适应度: " << avg_fitness 
+              << " (包裹率: " << (avg_fitness * 100) << "%)" << std::endl;
+    std::cerr << "[GA]   最佳个体: 纵向=" << std::fixed << std::setprecision(2) 
+              << best_individual.translation << "mm, 旋转=" 
+              << (best_individual.rotation * 180.0 / M_PI) << "°, 横向=" 
+              << best_individual.lateral << "mm" << std::endl;
+
+    // ========= 回放：保存 generation 0（初始种群评估完成）=========
+    // 说明：这里不把“每个个体”保存下来，只保存“每代最优解”等统计量，用于前端回放。
+    std::vector<GenerationState> history;
+    history.reserve(static_cast<size_t>(params.max_generations) + 1);
+    {
+        // 初始种群的 std_dev
+        double std_dev = 0.0;
+        for (const auto& ind : population) {
+            double diff = ind.fitness - avg_fitness;
+            std_dev += diff * diff;
+        }
+        std_dev = std::sqrt(std_dev / params.population_size);
+
+        GenerationState s;
+        s.generation = 0;
+        s.best_fitness = best_fitness;
+        s.avg_fitness = avg_fitness;
+        s.std_dev = std_dev;
+        s.translation = best_individual.translation;
+        s.rotation_angle_deg = best_individual.rotation * 180.0 / M_PI;
+        s.lateral_offset = best_individual.lateral;
+        s.crossover_count = 0;
+        s.mutation_count = 0;
+        s.time_ms = static_cast<double>(eval_time);
+        history.push_back(s);
+    }
+    
+    // 3. 进化循环
+    std::cerr << "\n[GA] 阶段2: 开始进化循环..." << std::endl;
+    int improvement_count = 0;
+    
+    for (int generation = 0; generation < params.max_generations; ++generation) {
+        auto gen_start = std::chrono::high_resolution_clock::now();
+        
+        // 选择：保留前selection_rate的个体
+        int elite_count = static_cast<int>(params.population_size * params.selection_rate);
+        std::vector<Individual> new_population;
+        new_population.reserve(params.population_size);
+        
+        // 保留精英
+        for (int i = 0; i < elite_count; ++i) {
+            new_population.push_back(population[i]);
+        }
+        
+        // 生成新个体（交叉和变异）
+        int crossover_count = 0;
+        int mutation_count = 0;
+        while (new_population.size() < static_cast<size_t>(params.population_size)) {
+            // 选择父代（从精英中选择）
+            std::uniform_int_distribution<int> elite_dist(0, elite_count - 1);
+            Individual parent1 = population[elite_dist(gen)];
+            Individual parent2 = population[elite_dist(gen)];
+            
+            // 交叉
+            Individual child;
+            if (prob_dist(gen) < params.crossover_rate) {
+                // 均匀交叉（纵向+旋转+横向）
+                child.translation = (parent1.translation + parent2.translation) / 2.0;
+                child.rotation = (parent1.rotation + parent2.rotation) / 2.0;
+                child.lateral = (parent1.lateral + parent2.lateral) / 2.0;
+                crossover_count++;
+            } else {
+                child = parent1;  // 直接复制
+            }
+            
+            // 变异
+            if (prob_dist(gen) < params.mutation_rate) {
+                child.translation += trans_dist(gen) * params.mutation_scale;
+                child.rotation += rot_dist(gen) * params.mutation_scale;
+                child.lateral += lat_dist(gen) * params.mutation_scale;
+                
+                // 限制范围
+                child.rotation = std::fmod(child.rotation + M_PI, 2 * M_PI) - M_PI;
+                mutation_count++;
+            }
+            
+            // 评估新个体
+            child.fitness = computeFitness(child);
+            new_population.push_back(child);
+        }
+        
+        // 更新种群
+        population = new_population;
+        std::sort(population.begin(), population.end(),
+                  [](const Individual& a, const Individual& b) { return a.fitness > b.fitness; });
+        
+        // 更新最佳个体
+        bool improved = false;
+        if (population[0].fitness > best_fitness) {
+            double improvement = population[0].fitness - best_fitness;
+            best_fitness = population[0].fitness;
+            best_individual = population[0];
+            improved = true;
+            improvement_count++;
+        }
+        
+        auto gen_end = std::chrono::high_resolution_clock::now();
+        auto gen_time = std::chrono::duration_cast<std::chrono::milliseconds>(gen_end - gen_start).count();
+        
+        double avg_fitness = std::accumulate(population.begin(), population.end(), 0.0,
+            [](double sum, const Individual& ind) { return sum + ind.fitness; }) / params.population_size;
+        double std_dev = 0.0;
+        for (const auto& ind : population) {
+            double diff = ind.fitness - avg_fitness;
+            std_dev += diff * diff;
+        }
+        std_dev = std::sqrt(std_dev / params.population_size);
+        
+        // 详细日志
+        std::cerr << "[GA] ┌─ 代数 " << std::setw(2) << (generation + 1) << "/" << params.max_generations << std::endl;
+        std::cerr << "[GA] │  最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+                  << " (" << (best_fitness * 100) << "%)" 
+                  << (improved ? " ⬆️ 提升!" : "") << std::endl;
+        std::cerr << "[GA] │  平均适应度: " << avg_fitness << " (" << (avg_fitness * 100) << "%)" << std::endl;
+        std::cerr << "[GA] │  标准差: " << std::setprecision(4) << std_dev << std::endl;
+        std::cerr << "[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation 
+                  << "mm, 旋转=" << (best_individual.rotation * 180.0 / M_PI) 
+                  << "°, 横向=" << best_individual.lateral << "mm" << std::endl;
+        std::cerr << "[GA] │  操作统计: 交叉=" << crossover_count 
+                  << ", 变异=" << mutation_count << std::endl;
+        std::cerr << "[GA] │  耗时: " << gen_time << "ms" << std::endl;
+        std::cerr << "[GA] └" << std::endl;
+
+        // ========= 回放：保存本代状态 =========
+        {
+            GenerationState s;
+            s.generation = generation + 1;
+            s.best_fitness = best_fitness;
+            s.avg_fitness = avg_fitness;
+            s.std_dev = std_dev;
+            s.translation = best_individual.translation;
+            s.rotation_angle_deg = best_individual.rotation * 180.0 / M_PI;
+            s.lateral_offset = best_individual.lateral;
+            s.crossover_count = crossover_count;
+            s.mutation_count = mutation_count;
+            s.time_ms = static_cast<double>(gen_time);
+            history.push_back(s);
+        }
+        
+        // 检查收敛
+        if (best_fitness >= 1.0 - params.convergence_threshold) {
+            std::cerr << "\n[GA] ✓ 达到目标适应度 (" << (best_fitness * 100) << "%)，提前退出" << std::endl;
+            break;
+        }
+    }
+    
+    optimal_relative_rotation_angle_rad = best_individual.rotation;
+    optimal_vertical_offset = 0.0;  // 垂直位移固定为0（不再优化）
+    optimal_lateral_offset = best_individual.lateral;
+    
+    std::cerr << "\n" << std::string(70, '=') << std::endl;
+    std::cerr << "[GA] ========== 遗传算法优化完成（3D优化）==========" << std::endl;
+    std::cerr << "[GA] 最终结果:" << std::endl;
+    std::cerr << "[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl;
+    std::cerr << "[GA]   最优参数:" << std::endl;
+    std::cerr << "[GA]     纵向位移: " << std::setprecision(2) << best_individual.translation << " mm" << std::endl;
+    std::cerr << "[GA]     旋转角度: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl;
+    std::cerr << "[GA]     横向位移: " << best_individual.lateral << " mm" << std::endl;
+    std::cerr << "[GA]   改进次数: " << improvement_count << " 次" << std::endl;
+    std::cerr << std::string(70, '=') << "\n" << std::endl;
+
+    // 保存到线程本地，供 matchOptimized 填充到 MatchResult.generation_history
+    g_last_ga_generation_history = std::move(history);
+
+    return best_individual.translation;
+}
+
 MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
                                        double wrapping_threshold,
-                                       const GradientDescentParams& gd_params) {
+                                       const GradientDescentParams& gd_params,
+                                       const GeneticAlgorithmParams& ga_params,
+                                       bool use_genetic_algorithm) {
     auto start_total = std::chrono::high_resolution_clock::now();
     MatchResult result;
     
@@ -1110,23 +1470,41 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     auto dt_verify = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 2: 验证方向对齐耗时: " << dt_verify << "ms" << std::endl;
     
-    // 3. 计算纵向轴（使用粗胚的纵向轴）
+    // 3. 计算纵向轴和垂直轴（使用粗胚的轴）
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 3: 开始计算纵向轴..." << std::endl;
+    std::cerr << "[LOG] Step 3: 开始计算方向轴..." << std::endl;
     Eigen::Vector3d longitudinal_axis = computeLongitudinalAxis(candidate_vertices_, candidate_faces_);
+    Eigen::Vector3d vertical_axis = computeVerticalAxis(candidate_vertices_, candidate_faces_);
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_axis = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 3: 计算纵向轴耗时: " << dt_axis << "ms" << std::endl;
+    std::cerr << "[LOG] Step 3: 计算方向轴耗时: " << dt_axis << "ms" << std::endl;
+    std::cerr << "[LOG]   纵向轴: (" << longitudinal_axis[0] << ", " 
+              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl;
+    std::cerr << "[LOG]   垂直轴: (" << vertical_axis[0] << ", " 
+              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl;
     
-    // 4. 使用2D梯度下降同时优化相对位移和相对旋转
-    // 前提：纵向轴已对齐（固定不动）
-    // 优化参数：
-    //   1. 沿纵向轴的相对前后位移（粗胚相对鞋模）
-    //   2. 绕纵向轴的相对旋转角度（粗胚相对鞋模）
+    // 4. 优化位置和旋转（默认使用遗传算法）
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 4: 开始2D梯度下降优化（纵向位移+相对旋转）..." << std::endl;
     double optimal_relative_rotation_angle_rad = 0.0;
     double optimal_vertical_offset = 0.0;
+    double optimal_lateral_offset = 0.0;  // 横向位移
+    
+    if (use_genetic_algorithm) {
+        std::cerr << "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl;
+        result.optimal_translation = optimizePositionAndRotationGA(
+            aligned_target, target_faces_,
+            candidate_vertices_, candidate_faces_,
+            longitudinal_axis,
+            vertical_axis,
+            optimal_relative_rotation_angle_rad,
+            optimal_vertical_offset,
+            optimal_lateral_offset,
+            ga_params
+        );
+        // 回放：复制 GA 每代历史到结果里（供前端回放）
+        result.generation_history = g_last_ga_generation_history;
+    } else {
+        std::cerr << "\n[LOG] Step 4: 使用梯度下降优化（纵向位移+相对旋转）..." << std::endl;
     result.optimal_translation = optimizePositionAndRotation(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_,
@@ -1135,9 +1513,17 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
         optimal_vertical_offset,
         gd_params
     );
+    }
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_optimize = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 4: 2D梯度下降优化耗时: " << dt_optimize << "ms" << std::endl;
+    std::cerr << "[LOG] Step 4: 优化完成，耗时: " << dt_optimize << "ms" << std::endl;
+    std::cerr << "[LOG]   最优参数: 纵向位移=" << std::fixed << std::setprecision(2) 
+              << result.optimal_translation << "mm, 旋转角度=" 
+              << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°";
+    if (use_genetic_algorithm) {
+        std::cerr << ", 横向位移=" << optimal_lateral_offset << "mm";
+    }
+    std::cerr << std::endl;
     
     // 5. 应用最优相对平移和相对旋转
     t0 = std::chrono::high_resolution_clock::now();
@@ -1157,7 +1543,11 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     candidate_center /= candidate_count;
     
     std::vector<double> optimized_candidate = candidate_vertices_;
-    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation;  // 只沿纵向轴平移
+    // 计算横向轴
+    Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
+    // 应用平移：纵向+横向（垂直位移固定为0）
+    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation 
+                                  + lateral_axis * optimal_lateral_offset;
     
     for (size_t i = 0; i < optimized_candidate.size(); i += 3) {
         Eigen::Vector3d v(optimized_candidate[i], 
@@ -1176,15 +1566,17 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     }
     
     result.optimal_rotation_angle_deg = optimal_relative_rotation_angle_rad * 180.0 / M_PI;
-    result.optimal_vertical_offset = optimal_vertical_offset;
+    // 垂直位移已不再优化，固定为 0（保留字段以兼容旧前端/脚本）
+    result.optimal_vertical_offset = 0.0;
+    result.optimal_lateral_offset = optimal_lateral_offset;
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_translate = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl;
     
-    // 6. 计算体积包裹率（检查10%的顶点）
+    // 6. 计算体积包裹率
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 6: 开始计算包裹率..." << std::endl;
+    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率..." << std::endl;
     result.wrapping_ratio = computeWrappingRatio(
         aligned_target, target_faces_,
         optimized_candidate, candidate_faces_,
@@ -1192,16 +1584,24 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     );
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_wrapping = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 6: 计算包裹率耗时: " << dt_wrapping << "ms" << std::endl;
+    std::cerr << "[LOG] Step 6: 包裹率计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
+    std::cerr << "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
+              << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl;
     
-    // 6. 检查是否完全包裹（严格100%）
+    // 检查是否完全包裹（严格100%）
     result.is_fully_wrapped = (result.wrapping_ratio >= 1.0);
     
     if (!result.is_fully_wrapped) {
+        std::cerr << "[LOG] ⚠️  包裹率未达到100%，不满足匹配条件" << std::endl;
+        auto end_total = std::chrono::high_resolution_clock::now();
+        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
+        std::cerr << "[LOG] 总耗时: " << total_time << "ms" << std::endl;
         return result;  // 不完全包裹，不满足条件
     }
     
     // 7. 计算体积和匹配分数（包裹率100%即无穿模）
+    t0 = std::chrono::high_resolution_clock::now();
+    std::cerr << "\n[LOG] Step 7: 计算最终体积和匹配分数..." << std::endl;
     result.has_penetration = false;  // 包裹率100%意味着无穿模
     
     result.volume = computeVolume(optimized_candidate, candidate_faces_);
@@ -1212,6 +1612,30 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
         double wrapping_score = result.wrapping_ratio;
         result.match_score = 0.6 * volume_score + 0.4 * wrapping_score;
     }
+    t1 = std::chrono::high_resolution_clock::now();
+    auto dt_score = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    
+    auto end_total = std::chrono::high_resolution_clock::now();
+    auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
+    
+    // 输出最终结果摘要
+    std::cerr << "\n" << std::string(70, '=') << std::endl;
+    std::cerr << "[LOG] ========== 匹配结果摘要 ==========" << std::endl;
+    std::cerr << "[LOG] 包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
+              << " (" << (result.wrapping_ratio * 100) << "%) ✅" << std::endl;
+    std::cerr << "[LOG] 体积: " << std::setprecision(2) << result.volume << " mm³" << std::endl;
+    std::cerr << "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl;
+    std::cerr << "[LOG] 最优参数:" << std::endl;
+    std::cerr << "[LOG]   纵向位移: " << std::setprecision(2) << result.optimal_translation << " mm" << std::endl;
+    std::cerr << "[LOG]   旋转角度: " << result.optimal_rotation_angle_deg << " °" << std::endl;
+    if (use_genetic_algorithm) {
+        std::cerr << "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl;
+    }
+    std::cerr << "[LOG] 性能统计:" << std::endl;
+    std::cerr << "[LOG]   总耗时: " << total_time << " ms" << std::endl;
+    std::cerr << "[LOG]   优化耗时: " << dt_optimize << " ms" << std::endl;
+    std::cerr << "[LOG]   包裹率计算耗时: " << dt_wrapping << " ms" << std::endl;
+    std::cerr << std::string(70, '=') << "\n" << std::endl;
     
     return result;
 }
