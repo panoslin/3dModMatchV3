@@ -1106,6 +1106,8 @@ double MeshMatcher::optimizePositionAndRotationGA(
     std::cerr << "[GA]   变异率: " << params.mutation_rate << std::endl;
     std::cerr << "[GA]   选择率: " << params.selection_rate << std::endl;
     std::cerr << "[GA]   采样点数: " << params.num_sample_points << std::endl;
+    std::cerr << "[GA]   提前终止: " << (params.early_stopping_generations > 0 ? 
+              std::to_string(params.early_stopping_generations) + "代无改进" : "禁用") << std::endl;
     std::cerr << "[GA]   搜索范围:" << std::endl;
     std::cerr << "[GA]     纵向位移: ±" << params.translation_range << "mm" << std::endl;
     std::cerr << "[GA]     旋转角度: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl;
@@ -1286,6 +1288,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
     // 3. 进化循环
     std::cerr << "\n[GA] 阶段2: 开始进化循环..." << std::endl;
     int improvement_count = 0;
+    int no_improvement_count = 0;  // 连续未改进的代数
     
     for (int generation = 0; generation < params.max_generations; ++generation) {
         auto gen_start = std::chrono::high_resolution_clock::now();
@@ -1350,6 +1353,9 @@ double MeshMatcher::optimizePositionAndRotationGA(
             best_individual = population[0];
             improved = true;
             improvement_count++;
+            no_improvement_count = 0;  // 重置未改进计数
+        } else {
+            no_improvement_count++;  // 增加未改进计数
         }
         
         auto gen_end = std::chrono::high_resolution_clock::now();
@@ -1398,6 +1404,15 @@ double MeshMatcher::optimizePositionAndRotationGA(
         // 检查收敛
         if (best_fitness >= 1.0 - params.convergence_threshold) {
             std::cerr << "\n[GA] ✓ 达到目标适应度 (" << (best_fitness * 100) << "%)，提前退出" << std::endl;
+            break;
+        }
+        
+        // 检查提前终止：连续N代无改进
+        if (params.early_stopping_generations > 0 && 
+            no_improvement_count >= params.early_stopping_generations) {
+            std::cerr << "\n[GA] ✓ 连续 " << no_improvement_count 
+                      << " 代无改进，提前终止（当前最佳适应度: " 
+                      << std::fixed << std::setprecision(4) << (best_fitness * 100) << "%）" << std::endl;
             break;
         }
     }

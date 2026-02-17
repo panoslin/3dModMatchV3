@@ -52,6 +52,7 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("selection_rate", &GeneticAlgorithmParams::selection_rate)
         .def_readwrite("convergence_threshold", &GeneticAlgorithmParams::convergence_threshold)
         .def_readwrite("num_sample_points", &GeneticAlgorithmParams::num_sample_points)
+        .def_readwrite("early_stopping_generations", &GeneticAlgorithmParams::early_stopping_generations)
         .def_readwrite("translation_range", &GeneticAlgorithmParams::translation_range)
         .def_readwrite("rotation_range", &GeneticAlgorithmParams::rotation_range)
         .def_readwrite("vertical_range", &GeneticAlgorithmParams::vertical_range)

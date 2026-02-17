@@ -69,6 +69,7 @@ struct GeneticAlgorithmParams {
     double selection_rate;       // 选择率（保留前N%）（默认0.5）
     double convergence_threshold; // 收敛阈值（默认1e-4）
     size_t num_sample_points;    // 采样点数量（默认500）
+    int early_stopping_generations; // 提前终止：连续N代无改进时退出（默认4，0表示禁用）
     
     // 搜索范围
     double translation_range;    // 纵向位移搜索范围（mm，默认±50）
@@ -85,6 +86,7 @@ struct GeneticAlgorithmParams {
           selection_rate(0.5),
           convergence_threshold(1e-4),
           num_sample_points(500),
+          early_stopping_generations(4),  // 默认连续4代无改进时提前终止
           translation_range(50.0),
           rotation_range(3.14159265358979323846),  // M_PI
           vertical_range(20.0),
