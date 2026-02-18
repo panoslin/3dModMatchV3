@@ -785,6 +785,126 @@ double MeshMatcher::computeWrappingRatio(
     return ratio;
 }
 
+double MeshMatcher::computeAverageClearance(
+    const std::vector<double>& target_vertices,
+    const std::vector<int>& target_faces,
+    const std::vector<double>& candidate_vertices,
+    const std::vector<int>& candidate_faces,
+    const KDTree* cached_tree,
+    const std::vector<Eigen::Vector3d>* cached_face_centers,
+    const std::vector<Eigen::Vector3d>* cached_face_normals) {
+    
+    auto t0 = std::chrono::high_resolution_clock::now();
+    
+    // 使用与 computeWrappingRatio 相同的采样逻辑
+    size_t num_vertices = target_vertices.size() / 3;
+    if (num_vertices == 0) {
+        return 0.0;
+    }
+    
+    // 固定采样500个点
+    size_t num_to_check = std::min(500UL, num_vertices);
+    if (num_to_check == 0) {
+        num_to_check = 1;
+    }
+    
+    size_t step = num_vertices / num_to_check;
+    if (step == 0) step = 1;
+    
+    // 构建或使用缓存的KD-tree
+    const KDTree* face_centers_tree;
+    const std::vector<Eigen::Vector3d>* face_centers;
+    const std::vector<Eigen::Vector3d>* face_normals;
+    
+    KDTree local_tree;
+    std::vector<Eigen::Vector3d> local_face_centers;
+    std::vector<Eigen::Vector3d> local_face_normals;
+    
+    if (cached_tree && cached_face_centers && cached_face_normals) {
+        face_centers_tree = cached_tree;
+        face_centers = cached_face_centers;
+        face_normals = cached_face_normals;
+    } else {
+        buildFaceKDTree(candidate_vertices, candidate_faces, local_tree, 
+                       local_face_centers, local_face_normals);
+        face_centers_tree = &local_tree;
+        face_centers = &local_face_centers;
+        face_normals = &local_face_normals;
+    }
+    
+    // 收集要检查的点（与 computeWrappingRatio 相同的逻辑）
+    std::vector<Eigen::Vector3d> points_to_check;
+    points_to_check.reserve(num_to_check);
+    
+    size_t start_offset = 0;
+    for (size_t i = start_offset * 3; i < target_vertices.size(); i += 3 * step) {
+        points_to_check.push_back(Eigen::Vector3d(
+            target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
+        if (points_to_check.size() >= num_to_check) {
+            break;
+        }
+    }
+    
+    if (points_to_check.size() < num_to_check) {
+        for (size_t i = 0; i < target_vertices.size() && points_to_check.size() < num_to_check; i += 3 * step) {
+            bool already_added = false;
+            Eigen::Vector3d candidate_point(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
+            for (const auto& existing : points_to_check) {
+                if ((existing - candidate_point).norm() < 1e-6) {
+                    already_added = true;
+                    break;
+                }
+            }
+            if (!already_added) {
+                points_to_check.push_back(candidate_point);
+            }
+        }
+    }
+    
+    // 计算距离并统计内部点的间隙
+    std::vector<double> clearances;
+    clearances.reserve(points_to_check.size());
+    
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (size_t idx = 0; idx < points_to_check.size(); ++idx) {
+        double dist = signedDistanceToMeshWithKDTree(
+            points_to_check[idx], candidate_vertices, candidate_faces,
+            *face_centers_tree, *face_centers, *face_normals);
+        
+        // 只统计在内部的点（距离 <= 0.1），间隙 = |距离|
+        if (dist <= 0.1) {
+            double clearance = std::abs(dist);
+            #ifdef _OPENMP
+            #pragma omp critical
+            #endif
+            {
+                clearances.push_back(clearance);
+            }
+        }
+    }
+    
+    // 计算平均间隙
+    if (clearances.empty()) {
+        return 0.0;  // 没有内部点，间隙为0
+    }
+    
+    double sum_clearance = 0.0;
+    for (double c : clearances) {
+        sum_clearance += c;
+    }
+    double avg_clearance = sum_clearance / clearances.size();
+    
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    std::cerr << "[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms" << std::endl;
+    std::cerr << "[LOG]   内部点数: " << clearances.size() << "/" << points_to_check.size() << std::endl;
+    std::cerr << "[LOG]   平均间隙: " << std::fixed << std::setprecision(4) << avg_clearance << " mm" << std::endl;
+    
+    return avg_clearance;
+}
+
 
 // 计算绕轴旋转的旋转矩阵（使用Rodrigues公式）
 static Eigen::Matrix3d computeRotationMatrixAroundAxis(const Eigen::Vector3d& axis, double angle_rad) {
@@ -1775,19 +1895,37 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     auto dt_translate = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl;
     
-    // 6. 计算体积包裹率
+    // 6. 计算体积包裹率和平均间隙
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率..." << std::endl;
+    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率和平均间隙..." << std::endl;
+    
+    // 构建KD-tree（用于包裹率和间隙计算）
+    KDTree clearance_tree;
+    std::vector<Eigen::Vector3d> clearance_face_centers;
+    std::vector<Eigen::Vector3d> clearance_face_normals;
+    buildFaceKDTree(optimized_candidate, candidate_faces_, clearance_tree, 
+                   clearance_face_centers, clearance_face_normals);
+    
+    // 计算包裹率（使用缓存的KD-tree）
     result.wrapping_ratio = computeWrappingRatio(
         aligned_target, target_faces_,
         optimized_candidate, candidate_faces_,
-        nullptr, nullptr, nullptr  // 不使用缓存
+        &clearance_tree, &clearance_face_centers, &clearance_face_normals
     );
+    
+    // 计算平均间隙（使用缓存的KD-tree）
+    result.avg_clearance = computeAverageClearance(
+        aligned_target, target_faces_,
+        optimized_candidate, candidate_faces_,
+        &clearance_tree, &clearance_face_centers, &clearance_face_normals
+    );
+    
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_wrapping = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 6: 包裹率计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
+    std::cerr << "[LOG] Step 6: 包裹率和平均间隙计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
     std::cerr << "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
               << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl;
+    std::cerr << "[LOG]   平均间隙: " << std::setprecision(4) << result.avg_clearance << " mm" << std::endl;
     
     // 确定目标包裹率：优先使用 GA 参数中的目标包裹率，否则使用 wrapping_threshold
     double target_wrapping = (ga_params.target_wrapping_ratio > 0.0) 
@@ -1831,6 +1969,7 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     std::cerr << "[LOG] ========== 匹配结果摘要 ==========" << std::endl;
     std::cerr << "[LOG] 包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
               << " (" << (result.wrapping_ratio * 100) << "%) ✅" << std::endl;
+    std::cerr << "[LOG] 平均间隙: " << std::setprecision(4) << result.avg_clearance << " mm" << std::endl;
     std::cerr << "[LOG] 体积: " << std::setprecision(2) << result.volume << " mm³" << std::endl;
     std::cerr << "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl;
     std::cerr << "[LOG] 最优参数:" << std::endl;

@@ -775,6 +775,10 @@
                     <span>${(match.wrapping_ratio * 100).toFixed(2)}% (目标: ${targetWrappingPercent}%)</span>
                 </div>
                 <div class="info-item">
+                    <strong>平均间隙</strong>
+                    <span>${(match.avg_clearance !== undefined ? match.avg_clearance.toFixed(4) : '0.0000')} mm</span>
+                </div>
+                <div class="info-item">
                     <strong>体积</strong>
                     <span>${match.volume.toFixed(2)}</span>
                 </div>

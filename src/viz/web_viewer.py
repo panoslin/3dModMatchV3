@@ -420,6 +420,7 @@ def match_files():
                 'volume': result.volume,
                 'wrapping_ratio': result.wrapping_ratio,
                 'target_wrapping_ratio': wrapping_threshold,  # 添加目标包裹率
+                'avg_clearance': float(getattr(result, 'avg_clearance', 0.0)),  # 平均间隙
                 'optimal_translation': result.optimal_translation,
                 'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
                 'optimal_lateral_offset': float(getattr(result, 'optimal_lateral_offset', 0.0)),

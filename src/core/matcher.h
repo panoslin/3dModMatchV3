@@ -133,6 +133,7 @@ struct MatchResult {
     // 新增字段
     DirectionAlignment direction_alignment;  // 方向对齐信息
     double wrapping_ratio;                   // 体积包裹率 [0, 1]
+    double avg_clearance;                    // 平均间隙（mm）：鞋模表面点到粗胚内表面的平均距离（仅统计在粗胚内的点）
     double optimal_translation;               // 最优前后位置平移量（沿纵向轴）
     double optimal_rotation_angle_deg;       // 最优绕纵向轴旋转角度（度）
     double optimal_vertical_offset;          // 最优垂直位移（垂直于纵向轴和横向轴，mm）
@@ -145,7 +146,7 @@ struct MatchResult {
     MatchResult() : candidate_index(-1), volume(0.0), 
                    normal_alignment_score(0.0), is_fully_wrapped(false),
                    has_penetration(true), match_score(0.0),
-                   wrapping_ratio(0.0), optimal_translation(0.0),
+                   wrapping_ratio(0.0), avg_clearance(0.0), optimal_translation(0.0),
                    optimal_rotation_angle_deg(0.0), optimal_vertical_offset(0.0),
                    optimal_lateral_offset(0.0),
                    meets_direction_constraints(false) {}
@@ -203,6 +204,16 @@ public:
     
     // 计算体积包裹率
     double computeWrappingRatio(
+        const std::vector<double>& target_vertices,
+        const std::vector<int>& target_faces,
+        const std::vector<double>& candidate_vertices,
+        const std::vector<int>& candidate_faces,
+        const KDTree* cached_tree = nullptr,
+        const std::vector<Eigen::Vector3d>* cached_face_centers = nullptr,
+        const std::vector<Eigen::Vector3d>* cached_face_normals = nullptr);
+    
+    // 计算平均间隙（对于在内部的点，计算它们到表面的平均距离）
+    double computeAverageClearance(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
         const std::vector<double>& candidate_vertices,

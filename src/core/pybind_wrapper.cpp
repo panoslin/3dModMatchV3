@@ -82,6 +82,7 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("match_score", &MatchResult::match_score)
         .def_readwrite("direction_alignment", &MatchResult::direction_alignment)
         .def_readwrite("wrapping_ratio", &MatchResult::wrapping_ratio)
+        .def_readwrite("avg_clearance", &MatchResult::avg_clearance)
         .def_readwrite("optimal_translation", &MatchResult::optimal_translation)
         .def_readwrite("optimal_rotation_angle_deg", &MatchResult::optimal_rotation_angle_deg)
         .def_readwrite("optimal_vertical_offset", &MatchResult::optimal_vertical_offset)
