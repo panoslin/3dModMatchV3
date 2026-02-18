@@ -16,7 +16,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - FLASK_ENV=production
-      - OMP_NUM_THREADS=8
+      - OMP_NUM_THREADS=16
       - OMP_PROC_BIND=true
       - OMP_PLACES=cores
     healthcheck:
@@ -42,6 +42,6 @@ services:
     restart: "no"
     environment:
       - PYTHONPATH=/app
-      - OMP_NUM_THREADS=8
+      - OMP_NUM_THREADS=16
       - OMP_PROC_BIND=true
       - OMP_PLACES=cores

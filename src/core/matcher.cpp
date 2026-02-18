@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <chrono>
 #include <random>
+#include <cstdlib>
+#include <thread>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -664,6 +666,8 @@ double MeshMatcher::computeWrappingRatio(
     std::vector<Eigen::Vector3d> local_face_centers;
     std::vector<Eigen::Vector3d> local_face_normals;
     
+    long long dt_kdtree = 0;  // KD-tree构建耗时（如果使用缓存则为0）
+    
     if (cached_tree && cached_face_centers && cached_face_normals) {
         // 使用缓存的KD-tree
         face_centers_tree = cached_tree;
@@ -676,7 +680,7 @@ double MeshMatcher::computeWrappingRatio(
         buildFaceKDTree(candidate_vertices, candidate_faces, local_tree, 
                        local_face_centers, local_face_normals);
         auto t_kdtree_end = std::chrono::high_resolution_clock::now();
-        auto dt_kdtree = std::chrono::duration_cast<std::chrono::milliseconds>(t_kdtree_end - t_kdtree).count();
+        dt_kdtree = std::chrono::duration_cast<std::chrono::milliseconds>(t_kdtree_end - t_kdtree).count();
         std::cerr << "[LOG] computeWrappingRatio: 构建KD-tree耗时: " << dt_kdtree << "ms" << std::endl;
         
         face_centers_tree = &local_tree;
@@ -718,6 +722,7 @@ double MeshMatcher::computeWrappingRatio(
     }
     
     // 并行计算距离
+    auto t_distance_start = std::chrono::high_resolution_clock::now();
     std::vector<int> inside_flags(points_to_check.size(), 0);
     size_t check_interval = std::max(1UL, points_to_check.size() / 10);  // 每10%输出一次进度
     
@@ -745,6 +750,8 @@ double MeshMatcher::computeWrappingRatio(
             }
         }
     }
+    auto t_distance_end = std::chrono::high_resolution_clock::now();
+    auto dt_distance = std::chrono::duration_cast<std::chrono::milliseconds>(t_distance_end - t_distance_start).count();
     
     // 统计结果
     int inside_count = 0;
@@ -760,8 +767,18 @@ double MeshMatcher::computeWrappingRatio(
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     double ratio = (inside_count == total_checked) ? 1.0 : (static_cast<double>(inside_count) / total_checked);
-    std::cerr << "[LOG] computeWrappingRatio: 完成，耗时: " << dt << "ms, 包裹率: " 
-              << (ratio * 100) << "% (" << inside_count << "/" << total_checked << ")" << std::endl;
+    
+    // 详细性能分析
+    auto dt_sampling = dt - dt_kdtree - dt_distance;  // 点采样收集耗时
+    std::cerr << "[LOG] computeWrappingRatio: 完成，总耗时: " << dt << "ms" << std::endl;
+    std::cerr << "[LOG]   性能分析:" << std::endl;
+    std::cerr << "[LOG]     - KD-tree构建: " << dt_kdtree << "ms" << std::endl;
+    std::cerr << "[LOG]     - 点采样收集: " << (dt - dt_kdtree - dt_distance) << "ms" << std::endl;
+    std::cerr << "[LOG]     - 距离计算: " << dt_distance << "ms (" << points_to_check.size() 
+              << "个点, 平均: " << std::fixed << std::setprecision(3) 
+              << (dt_distance / static_cast<double>(points_to_check.size())) << "ms/点)" << std::endl;
+    std::cerr << "[LOG]   包裹率: " << std::setprecision(2) << (ratio * 100) << "% (" 
+              << inside_count << "/" << total_checked << ")" << std::endl;
     
     // 包裹率 = 内部点数 / 总检查点数
     // 只有当所有检查的点都在内部时，才返回1.0（严格100%）
@@ -1094,6 +1111,34 @@ double MeshMatcher::optimizePositionAndRotationGA(
     double& optimal_lateral_offset,
     const GeneticAlgorithmParams& params) {
     
+    // 设置 OpenMP 默认线程数为 CPU 核心数 * 2（利用超线程）
+    // 注意：如果用户通过环境变量 OMP_NUM_THREADS 设置了线程数，则优先使用环境变量的值
+    #ifdef _OPENMP
+    {
+        // 检查是否已通过环境变量设置线程数
+        const char* env_threads = std::getenv("OMP_NUM_THREADS");
+        if (env_threads == nullptr) {
+            // 未设置环境变量，使用默认值：核心数 * 2
+            unsigned int num_cores = std::thread::hardware_concurrency();
+            if (num_cores > 0) {
+                int num_threads = static_cast<int>(num_cores * 2);
+                omp_set_num_threads(num_threads);
+                std::cerr << "[GA] 设置 OpenMP 线程数: " << num_threads 
+                          << " (CPU 核心数: " << num_cores << " × 2，利用超线程)" << std::endl;
+            } else {
+                // 如果无法检测核心数，使用默认值（通常是 8）
+                int num_threads = 8;
+                omp_set_num_threads(num_threads);
+                std::cerr << "[GA] 无法检测 CPU 核心数，设置 OpenMP 线程数为默认值: " << num_threads << std::endl;
+            }
+        } else {
+            // 已通过环境变量设置，使用环境变量的值
+            int env_threads_val = std::atoi(env_threads);
+            std::cerr << "[GA] 使用环境变量 OMP_NUM_THREADS=" << env_threads_val << " 设置的线程数" << std::endl;
+        }
+    }
+    #endif
+    
     // 计算横向轴（纵向轴 × 垂直轴）
     Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
     
@@ -1229,16 +1274,22 @@ double MeshMatcher::optimizePositionAndRotationGA(
     auto eval_start = std::chrono::high_resolution_clock::now();
     std::cerr << "\n[GA] 阶段1: 评估初始种群 (" << params.population_size << " 个个体)..." << std::endl;
     
+    auto t_fitness_start = std::chrono::high_resolution_clock::now();
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
     for (size_t i = 0; i < population.size(); ++i) {
         population[i].fitness = computeFitness(population[i]);
     }
+    auto t_fitness_end = std::chrono::high_resolution_clock::now();
+    auto t_fitness_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_fitness_end - t_fitness_start).count();
     
     // 排序（适应度从高到低）
+    auto t_sort_start = std::chrono::high_resolution_clock::now();
     std::sort(population.begin(), population.end(), 
               [](const Individual& a, const Individual& b) { return a.fitness > b.fitness; });
+    auto t_sort_end = std::chrono::high_resolution_clock::now();
+    auto t_sort_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_sort_end - t_sort_start).count();
     
     auto eval_end = std::chrono::high_resolution_clock::now();
     auto eval_time = std::chrono::duration_cast<std::chrono::milliseconds>(eval_end - eval_start).count();
@@ -1248,7 +1299,12 @@ double MeshMatcher::optimizePositionAndRotationGA(
     double avg_fitness = std::accumulate(population.begin(), population.end(), 0.0,
         [](double sum, const Individual& ind) { return sum + ind.fitness; }) / params.population_size;
     
-    std::cerr << "[GA] ✓ 初始种群评估完成，耗时: " << eval_time << "ms" << std::endl;
+    std::cerr << "[GA] ✓ 初始种群评估完成，总耗时: " << eval_time << "ms" << std::endl;
+    std::cerr << "[GA]   性能分析:" << std::endl;
+    std::cerr << "[GA]     - 适应度计算: " << t_fitness_ms << "ms (" << params.population_size 
+              << "次, 平均: " << std::fixed << std::setprecision(2) 
+              << (t_fitness_ms / static_cast<double>(params.population_size)) << "ms/次)" << std::endl;
+    std::cerr << "[GA]     - 排序: " << t_sort_ms << "ms" << std::endl;
     std::cerr << "[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
               << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl;
     std::cerr << "[GA]   平均适应度: " << avg_fitness 
@@ -1290,10 +1346,15 @@ double MeshMatcher::optimizePositionAndRotationGA(
     int improvement_count = 0;
     int no_improvement_count = 0;  // 连续未改进的代数
     
+    // 性能统计：累计适应度计算时间（包含初始种群）
+    long long total_fitness_time_ms = t_fitness_ms;
+    long long total_fitness_calls = params.population_size;
+    
     for (int generation = 0; generation < params.max_generations; ++generation) {
         auto gen_start = std::chrono::high_resolution_clock::now();
         
         // 选择：保留前selection_rate的个体
+        auto t_selection_start = std::chrono::high_resolution_clock::now();
         int elite_count = static_cast<int>(params.population_size * params.selection_rate);
         std::vector<Individual> new_population;
         new_population.reserve(params.population_size);
@@ -1302,11 +1363,20 @@ double MeshMatcher::optimizePositionAndRotationGA(
         for (int i = 0; i < elite_count; ++i) {
             new_population.push_back(population[i]);
         }
+        auto t_selection_end = std::chrono::high_resolution_clock::now();
+        auto t_selection_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_selection_end - t_selection_start).count();
         
-        // 生成新个体（交叉和变异）
+        // 生成新个体（交叉和变异）- 分两阶段：先生成，再并行评估
+        auto t_evolution_start = std::chrono::high_resolution_clock::now();
         int crossover_count = 0;
         int mutation_count = 0;
-        while (new_population.size() < static_cast<size_t>(params.population_size)) {
+        
+        // 阶段1：生成所有新个体（不计算适应度）
+        std::vector<Individual> new_individuals;
+        int num_new_needed = params.population_size - elite_count;
+        new_individuals.reserve(num_new_needed);
+        
+        while (new_individuals.size() < static_cast<size_t>(num_new_needed)) {
             // 选择父代（从精英中选择）
             std::uniform_int_distribution<int> elite_dist(0, elite_count - 1);
             Individual parent1 = population[elite_dist(gen)];
@@ -1335,15 +1405,51 @@ double MeshMatcher::optimizePositionAndRotationGA(
                 mutation_count++;
             }
             
-            // 评估新个体
-            child.fitness = computeFitness(child);
-            new_population.push_back(child);
+            // 暂不计算适应度，先收集
+            new_individuals.push_back(child);
         }
         
+        // 阶段2：并行评估所有新个体的适应度
+        auto t_fitness_start = std::chrono::high_resolution_clock::now();
+        long long gen_fitness_time_ms = 0;
+        int gen_fitness_calls = new_individuals.size();
+        
+        #ifdef _OPENMP
+        #pragma omp parallel for
+        #endif
+        for (size_t i = 0; i < new_individuals.size(); ++i) {
+            auto t_fit_start = std::chrono::high_resolution_clock::now();
+            new_individuals[i].fitness = computeFitness(new_individuals[i]);
+            auto t_fit_end = std::chrono::high_resolution_clock::now();
+            
+            // 累加时间（使用 critical 保护，避免竞争）
+            #ifdef _OPENMP
+            #pragma omp critical
+            #endif
+            {
+                gen_fitness_time_ms += std::chrono::duration_cast<std::chrono::microseconds>(t_fit_end - t_fit_start).count();
+            }
+        }
+        auto t_fitness_end = std::chrono::high_resolution_clock::now();
+        gen_fitness_time_ms = gen_fitness_time_ms / 1000;  // 转换为毫秒
+        
+        // 将新个体添加到种群
+        for (const auto& ind : new_individuals) {
+            new_population.push_back(ind);
+        }
+        
+        auto t_evolution_end = std::chrono::high_resolution_clock::now();
+        auto t_evolution_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_evolution_end - t_evolution_start).count();
+        total_fitness_time_ms += gen_fitness_time_ms;
+        total_fitness_calls += gen_fitness_calls;
+        
         // 更新种群
+        auto t_sort_start = std::chrono::high_resolution_clock::now();
         population = new_population;
         std::sort(population.begin(), population.end(),
                   [](const Individual& a, const Individual& b) { return a.fitness > b.fitness; });
+        auto t_sort_end = std::chrono::high_resolution_clock::now();
+        auto t_sort_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_sort_end - t_sort_start).count();
         
         // 更新最佳个体
         bool improved = false;
@@ -1382,7 +1488,30 @@ double MeshMatcher::optimizePositionAndRotationGA(
                   << "°, 横向=" << best_individual.lateral << "mm" << std::endl;
         std::cerr << "[GA] │  操作统计: 交叉=" << crossover_count 
                   << ", 变异=" << mutation_count << std::endl;
-        std::cerr << "[GA] │  耗时: " << gen_time << "ms" << std::endl;
+        std::cerr << "[GA] │  性能分析:" << std::endl;
+        std::cerr << "[GA] │    选择耗时: " << t_selection_ms << "ms" << std::endl;
+        std::cerr << "[GA] │    进化耗时: " << t_evolution_ms << "ms" << std::endl;
+        std::cerr << "[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
+                  << gen_fitness_calls << "次";
+        #ifdef _OPENMP
+        // 获取并行线程数（兼容 macOS 和 Linux）
+        int num_threads = 1;
+        #pragma omp parallel
+        {
+            #pragma omp single
+            {
+                num_threads = omp_get_num_threads();
+            }
+        }
+        if (num_threads > 1) {
+            std::cerr << ", 并行线程数: " << num_threads;
+        }
+        #endif
+        std::cerr << ", 平均: " << std::fixed << std::setprecision(1)
+                  << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
+                  << "ms/次)" << std::endl;
+        std::cerr << "[GA] │    排序耗时: " << t_sort_ms << "ms" << std::endl;
+        std::cerr << "[GA] │    总耗时: " << gen_time << "ms" << std::endl;
         std::cerr << "[GA] └" << std::endl;
 
         // ========= 回放：保存本代状态 =========
@@ -1431,6 +1560,13 @@ double MeshMatcher::optimizePositionAndRotationGA(
     std::cerr << "[GA]     旋转角度: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl;
     std::cerr << "[GA]     横向位移: " << best_individual.lateral << " mm" << std::endl;
     std::cerr << "[GA]   改进次数: " << improvement_count << " 次" << std::endl;
+    std::cerr << "[GA]   性能统计:" << std::endl;
+    std::cerr << "[GA]     适应度计算总耗时: " << total_fitness_time_ms << "ms" << std::endl;
+    std::cerr << "[GA]     适应度计算总次数: " << total_fitness_calls << " 次" << std::endl;
+    if (total_fitness_calls > 0) {
+        std::cerr << "[GA]     平均每次适应度计算: " << std::setprecision(2) 
+                  << (static_cast<double>(total_fitness_time_ms) / total_fitness_calls) << "ms" << std::endl;
+    }
     std::cerr << std::string(70, '=') << "\n" << std::endl;
 
     // 保存到线程本地，供 matchOptimized 填充到 MatchResult.generation_history
@@ -1646,10 +1782,27 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     if (use_genetic_algorithm) {
         std::cerr << "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl;
     }
-    std::cerr << "[LOG] 性能统计:" << std::endl;
-    std::cerr << "[LOG]   总耗时: " << total_time << " ms" << std::endl;
-    std::cerr << "[LOG]   优化耗时: " << dt_optimize << " ms" << std::endl;
-    std::cerr << "[LOG]   包裹率计算耗时: " << dt_wrapping << " ms" << std::endl;
+    std::cerr << "[LOG] ========== 性能分析 ==========" << std::endl;
+    std::cerr << "[LOG] 各步骤耗时及占比:" << std::endl;
+    if (total_time > 0) {
+        std::cerr << "[LOG]   Step 0 (计算体积): " << dt_volume << "ms (" 
+                  << std::setprecision(1) << (100.0 * dt_volume / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 1 (方向对齐): " << dt_align << "ms (" 
+                  << (100.0 * dt_align / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 2 (验证对齐): " << dt_verify << "ms (" 
+                  << (100.0 * dt_verify / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 3 (计算轴): " << dt_axis << "ms (" 
+                  << (100.0 * dt_axis / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 4 (优化): " << dt_optimize << "ms (" 
+                  << (100.0 * dt_optimize / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 5 (应用变换): " << dt_translate << "ms (" 
+                  << (100.0 * dt_translate / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 6 (包裹率): " << dt_wrapping << "ms (" 
+                  << (100.0 * dt_wrapping / total_time) << "%)" << std::endl;
+        std::cerr << "[LOG]   Step 7 (最终计算): " << dt_score << "ms (" 
+                  << (100.0 * dt_score / total_time) << "%)" << std::endl;
+    }
+    std::cerr << "[LOG]   总耗时: " << total_time << "ms" << std::endl;
     std::cerr << std::string(70, '=') << "\n" << std::endl;
     
     return result;
