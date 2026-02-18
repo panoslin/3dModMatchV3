@@ -720,7 +720,7 @@
                 formData.append('candidate_file', candidateFile);
                 formData.append('mesh_quality', 'high');
                 formData.append('penetration_tolerance', '0.01');
-                formData.append('wrapping_threshold', '0.99');
+                formData.append('wrapping_threshold', '0.96');  // 默认目标包裹率96%
                 
                 const response = await fetch('/api/match', {
                     method: 'POST',
@@ -761,14 +761,18 @@
             const lateral = (match.optimal_lateral_offset !== undefined && match.optimal_lateral_offset !== null)
                 ? Number(match.optimal_lateral_offset)
                 : 0.0;
+            const targetWrappingRatio = match.target_wrapping_ratio !== undefined 
+                ? match.target_wrapping_ratio 
+                : 0.96;  // 默认96%
+            const targetWrappingPercent = (targetWrappingRatio * 100).toFixed(2);
             infoContent.innerHTML = `
                 <div class="info-item">
                     <strong>匹配结果</strong>
-                    <span>${match.is_fully_wrapped ? '✅ 完全包裹' : '❌ 不完全包裹'}</span>
+                    <span>${match.is_fully_wrapped ? `✅ 达到目标包裹率 (${targetWrappingPercent}%)` : `❌ 未达到目标包裹率 (${targetWrappingPercent}%)`}</span>
                 </div>
                 <div class="info-item">
                     <strong>包裹率</strong>
-                    <span>${(match.wrapping_ratio * 100).toFixed(2)}%</span>
+                    <span>${(match.wrapping_ratio * 100).toFixed(2)}% (目标: ${targetWrappingPercent}%)</span>
                 </div>
                 <div class="info-item">
                     <strong>体积</strong>

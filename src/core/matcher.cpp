@@ -1313,6 +1313,48 @@ double MeshMatcher::optimizePositionAndRotationGA(
               << best_individual.translation << "mm, 旋转=" 
               << (best_individual.rotation * 180.0 / M_PI) << "°, 横向=" 
               << best_individual.lateral << "mm" << std::endl;
+    
+    // 检查初始种群是否已达到目标包裹率
+    if (params.target_wrapping_ratio > 0.0 && best_fitness >= params.target_wrapping_ratio) {
+        std::cerr << "\n[GA] ✓ 初始种群已达到目标包裹率 (" << std::fixed << std::setprecision(2) 
+                  << (params.target_wrapping_ratio * 100) << "%)，当前包裹率: " 
+                  << (best_fitness * 100) << "%，无需继续进化" << std::endl;
+        
+        // 保存初始状态到历史记录
+        std::vector<GenerationState> history;
+        double std_dev = 0.0;
+        for (const auto& ind : population) {
+            double diff = ind.fitness - avg_fitness;
+            std_dev += diff * diff;
+        }
+        std_dev = std::sqrt(std_dev / params.population_size);
+        
+        GenerationState s;
+        s.generation = 0;
+        s.best_fitness = best_fitness;
+        s.avg_fitness = avg_fitness;
+        s.std_dev = std_dev;
+        s.translation = best_individual.translation;
+        s.rotation_angle_deg = best_individual.rotation * 180.0 / M_PI;
+        s.lateral_offset = best_individual.lateral;
+        s.crossover_count = 0;
+        s.mutation_count = 0;
+        s.time_ms = static_cast<double>(eval_time);
+        history.push_back(s);
+        
+        // 保存到线程本地变量（用于回放）
+        #ifdef _OPENMP
+        #pragma omp critical
+        #endif
+        {
+            g_last_ga_generation_history = history;
+        }
+        
+        optimal_relative_rotation_angle_rad = best_individual.rotation;
+        optimal_vertical_offset = best_individual.translation;
+        optimal_lateral_offset = best_individual.lateral;
+        return best_fitness;
+    }
 
     // ========= 回放：保存 generation 0（初始种群评估完成）=========
     // 说明：这里不把“每个个体”保存下来，只保存“每代最优解”等统计量，用于前端回放。
@@ -1530,6 +1572,14 @@ double MeshMatcher::optimizePositionAndRotationGA(
             history.push_back(s);
         }
         
+        // 检查目标包裹率：达到目标包裹率即停止
+        if (params.target_wrapping_ratio > 0.0 && best_fitness >= params.target_wrapping_ratio) {
+            std::cerr << "\n[GA] ✓ 达到目标包裹率 (" << std::fixed << std::setprecision(2) 
+                      << (params.target_wrapping_ratio * 100) << "%)，当前包裹率: " 
+                      << (best_fitness * 100) << "%，提前退出" << std::endl;
+            break;
+        }
+        
         // 检查收敛
         if (best_fitness >= 1.0 - params.convergence_threshold) {
             std::cerr << "\n[GA] ✓ 达到目标适应度 (" << (best_fitness * 100) << "%)，提前退出" << std::endl;
@@ -1739,15 +1789,22 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     std::cerr << "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
               << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl;
     
-    // 检查是否完全包裹（严格100%）
-    result.is_fully_wrapped = (result.wrapping_ratio >= 1.0);
+    // 确定目标包裹率：优先使用 GA 参数中的目标包裹率，否则使用 wrapping_threshold
+    double target_wrapping = (ga_params.target_wrapping_ratio > 0.0) 
+                              ? ga_params.target_wrapping_ratio 
+                              : wrapping_threshold;
+    
+    // 检查是否达到目标包裹率
+    result.is_fully_wrapped = (result.wrapping_ratio >= target_wrapping);
     
     if (!result.is_fully_wrapped) {
-        std::cerr << "[LOG] ⚠️  包裹率未达到100%，不满足匹配条件" << std::endl;
+        std::cerr << "[LOG] ⚠️  包裹率未达到目标值 (" << std::fixed << std::setprecision(2) 
+                  << (target_wrapping * 100) << "%)，当前包裹率: " 
+                  << (result.wrapping_ratio * 100) << "%，不满足匹配条件" << std::endl;
         auto end_total = std::chrono::high_resolution_clock::now();
         auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
         std::cerr << "[LOG] 总耗时: " << total_time << "ms" << std::endl;
-        return result;  // 不完全包裹，不满足条件
+        return result;  // 未达到目标包裹率，不满足条件
     }
     
     // 7. 计算体积和匹配分数（包裹率100%即无穿模）

@@ -460,6 +460,12 @@ def main():
         default=30.0,
         help='GA横向位移搜索范围（mm，默认: ±30）'
     )
+    parser.add_argument(
+        '--ga-target-wrapping-ratio',
+        type=float,
+        default=0.96,
+        help='GA目标包裹率（默认: 0.96，达到此值即停止优化，0表示禁用）'
+    )
     
     args = parser.parse_args()
     
@@ -498,6 +504,7 @@ def main():
     ga_params.vertical_range = args.ga_vertical_range
     ga_params.lateral_range = args.ga_lateral_range
     ga_params.num_sample_points = args.num_sample_points
+    ga_params.target_wrapping_ratio = args.ga_target_wrapping_ratio
     
     if args.verbose:
         algorithm_name = "遗传算法 (GA)" if args.use_ga else "梯度下降 (GD)"

@@ -238,9 +238,15 @@ def match_files():
         penetration_tolerance = float(request.form.get('penetration_tolerance', 0.01))
         wrapping_threshold = float(request.form.get('wrapping_threshold', 0.99))
         
+        # 创建 GA 参数，使用目标包裹率（默认96%）
+        ga_params = mesh_matcher.GeneticAlgorithmParams()
+        ga_params.target_wrapping_ratio = wrapping_threshold  # 使用前端传入的目标包裹率
+        
         result = matcher.match_optimized(
             penetration_tolerance=penetration_tolerance,
-            wrapping_threshold=wrapping_threshold
+            wrapping_threshold=wrapping_threshold,
+            ga_params=ga_params,
+            use_genetic_algorithm=True
         )
         
         # =========================
@@ -413,6 +419,7 @@ def match_files():
             'match_result': {
                 'volume': result.volume,
                 'wrapping_ratio': result.wrapping_ratio,
+                'target_wrapping_ratio': wrapping_threshold,  # 添加目标包裹率
                 'optimal_translation': result.optimal_translation,
                 'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
                 'optimal_lateral_offset': float(getattr(result, 'optimal_lateral_offset', 0.0)),
