@@ -31,7 +31,8 @@ def match_single_pair(
     target_file: Path,
     candidate_file: Path,
     wrapping_threshold: float = 0.99,
-    ga_params=None
+    ga_params=None,
+    verbose: bool = False
 ) -> Tuple[bool, Dict]:
     """
     匹配单个 target 和 candidate 文件对
@@ -51,6 +52,7 @@ def match_single_pair(
         
         # 创建匹配器
         matcher = mesh_matcher.MeshMatcher()
+        matcher.set_verbose(verbose)
         matcher.load_target_mesh(target_vertices, target_faces)
         
         # 加载候选文件
@@ -180,7 +182,8 @@ def test_all_matches(
                     target_file,
                     candidate_file,
                     wrapping_threshold=wrapping_threshold,
-                    ga_params=ga_params
+                    ga_params=ga_params,
+                    verbose=verbose
                 )
                 
                 total_matches += 1

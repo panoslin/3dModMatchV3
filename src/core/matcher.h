@@ -119,6 +119,9 @@ public:
     bool loadCandidateMesh(const std::vector<double>& vertices, 
                           const std::vector<int>& faces);
     
+    // 设置是否输出详细日志
+    void setVerbose(bool verbose);
+    
     // 执行优化匹配（基于生产场景）
     // 注意：方向会自动对齐
     // 使用遗传算法（GA）进行优化
@@ -214,6 +217,7 @@ private:
     std::vector<int> target_faces_;
     std::vector<double> candidate_vertices_;
     std::vector<int> candidate_faces_;
+    bool verbose_;  // 是否输出详细日志
 };
 
 #endif // MATCHER_H

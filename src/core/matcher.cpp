@@ -16,7 +16,14 @@
 // GA 回放：保存最近一次 GA 的每代历史（线程本地，避免并发互相覆盖）
 static thread_local std::vector<GenerationState> g_last_ga_generation_history;
 
-MeshMatcher::MeshMatcher() {
+// 日志输出宏：只在 verbose_ 为 true 时输出
+#define LOG_IF_VERBOSE(msg) do { if (verbose_) { std::cerr << msg; } } while(0)
+
+MeshMatcher::MeshMatcher() : verbose_(false) {
+}
+
+void MeshMatcher::setVerbose(bool verbose) {
+    verbose_ = verbose;
 }
 
 MeshMatcher::~MeshMatcher() {
@@ -476,32 +483,32 @@ Eigen::Matrix3d MeshMatcher::alignDirections(
     const std::vector<double>& candidate_vertices,
     const std::vector<int>& candidate_faces) {
     
-    std::cerr << "[LOG] alignDirections: 开始计算方向轴..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 开始计算方向轴..." << std::endl);
     auto t0 = std::chrono::high_resolution_clock::now();
     
     // 计算鞋模和粗胚的纵向轴和垂直轴
     Eigen::Vector3d target_longitudinal = computeLongitudinalAxis(target_vertices, target_faces);
     auto t1 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 计算目标纵向轴耗时: " 
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 计算目标纵向轴耗时: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl);
     
     t0 = std::chrono::high_resolution_clock::now();
     Eigen::Vector3d target_vertical = computeVerticalAxis(target_vertices, target_faces);
     t1 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 计算目标垂直轴耗时: " 
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 计算目标垂直轴耗时: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl);
     
     t0 = std::chrono::high_resolution_clock::now();
     Eigen::Vector3d candidate_longitudinal = computeLongitudinalAxis(candidate_vertices, candidate_faces);
     t1 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 计算候选纵向轴耗时: " 
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 计算候选纵向轴耗时: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl);
     
     t0 = std::chrono::high_resolution_clock::now();
     Eigen::Vector3d candidate_vertical = computeVerticalAxis(candidate_vertices, candidate_faces);
     t1 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 计算候选垂直轴耗时: " 
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 计算候选垂直轴耗时: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl);
     
     // 构建目标坐标系（鞋模）
     Eigen::Matrix3d target_frame;
@@ -551,7 +558,7 @@ Eigen::Matrix3d MeshMatcher::alignDirections(
     
     // 应用旋转矩阵到所有顶点
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 开始旋转 " << (target_vertices.size() / 3) << " 个顶点..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 开始旋转 " << (target_vertices.size() / 3) << " 个顶点..." << std::endl);
     for (size_t i = 0; i < target_vertices.size(); i += 3) {
         Eigen::Vector3d v(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
         v -= target_center;  // 平移到原点
@@ -562,8 +569,8 @@ Eigen::Matrix3d MeshMatcher::alignDirections(
         target_vertices[i+2] = v[2];
     }
     t1 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] alignDirections: 旋转顶点耗时: " 
-              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] alignDirections: 旋转顶点耗时: " 
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << "ms" << std::endl);
     
     return rotation_matrix;
 }
@@ -636,8 +643,8 @@ double MeshMatcher::computeWrappingRatio(
     size_t step = num_vertices / num_to_check;
     if (step == 0) step = 1;
     
-    std::cerr << "[LOG] computeWrappingRatio: 检查 " << num_to_check << "/" << num_vertices 
-              << " 个顶点 (步长: " << step << ")..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 检查 " << num_to_check << "/" << num_vertices 
+              << " 个顶点 (步长: " << step << ")..." << std::endl);
     
     // 构建或使用缓存的KD-tree（用于加速距离查询）
     const KDTree* face_centers_tree;
@@ -655,7 +662,7 @@ double MeshMatcher::computeWrappingRatio(
         face_centers_tree = cached_tree;
         face_centers = cached_face_centers;
         face_normals = cached_face_normals;
-        std::cerr << "[LOG] computeWrappingRatio: 使用缓存的KD-tree" << std::endl;
+        LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 使用缓存的KD-tree" << std::endl);
     } else {
         // 构建新的KD-tree
         auto t_kdtree = std::chrono::high_resolution_clock::now();
@@ -663,7 +670,7 @@ double MeshMatcher::computeWrappingRatio(
                        local_face_centers, local_face_normals);
         auto t_kdtree_end = std::chrono::high_resolution_clock::now();
         dt_kdtree = std::chrono::duration_cast<std::chrono::milliseconds>(t_kdtree_end - t_kdtree).count();
-        std::cerr << "[LOG] computeWrappingRatio: 构建KD-tree耗时: " << dt_kdtree << "ms" << std::endl;
+        LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 构建KD-tree耗时: " << dt_kdtree << "ms" << std::endl);
         
         face_centers_tree = &local_tree;
         face_centers = &local_face_centers;
@@ -726,9 +733,9 @@ double MeshMatcher::computeWrappingRatio(
             #pragma omp critical
             #endif
             {
-                std::cerr << "[LOG] computeWrappingRatio: 进度 " 
+                LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 进度 " 
                           << (idx * 100 / points_to_check.size()) 
-                          << "%, 已检查: " << idx << "/" << points_to_check.size() << std::endl;
+                          << "%, 已检查: " << idx << "/" << points_to_check.size() << std::endl);
             }
         }
     }
@@ -752,15 +759,15 @@ double MeshMatcher::computeWrappingRatio(
     
     // 详细性能分析
     auto dt_sampling = dt - dt_kdtree - dt_distance;  // 点采样收集耗时
-    std::cerr << "[LOG] computeWrappingRatio: 完成，总耗时: " << dt << "ms" << std::endl;
-    std::cerr << "[LOG]   性能分析:" << std::endl;
-    std::cerr << "[LOG]     - KD-tree构建: " << dt_kdtree << "ms" << std::endl;
-    std::cerr << "[LOG]     - 点采样收集: " << (dt - dt_kdtree - dt_distance) << "ms" << std::endl;
-    std::cerr << "[LOG]     - 距离计算: " << dt_distance << "ms (" << points_to_check.size() 
+    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 完成，总耗时: " << dt << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   性能分析:" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]     - KD-tree构建: " << dt_kdtree << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]     - 点采样收集: " << (dt - dt_kdtree - dt_distance) << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]     - 距离计算: " << dt_distance << "ms (" << points_to_check.size() 
               << "个点, 平均: " << std::fixed << std::setprecision(3) 
-              << (dt_distance / static_cast<double>(points_to_check.size())) << "ms/点)" << std::endl;
-    std::cerr << "[LOG]   包裹率: " << std::setprecision(2) << (ratio * 100) << "% (" 
-              << inside_count << "/" << total_checked << ")" << std::endl;
+              << (dt_distance / static_cast<double>(points_to_check.size())) << "ms/点)" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   包裹率: " << std::setprecision(2) << (ratio * 100) << "% (" 
+              << inside_count << "/" << total_checked << ")" << std::endl);
     
     // 包裹率 = 内部点数 / 总检查点数
     // 只有当所有检查的点都在内部时，才返回1.0（严格100%）
@@ -884,9 +891,9 @@ double MeshMatcher::computeAverageClearance(
     
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms" << std::endl;
-    std::cerr << "[LOG]   内部点数: " << clearances.size() << "/" << points_to_check.size() << std::endl;
-    std::cerr << "[LOG]   96%分位数间隙: " << std::fixed << std::setprecision(4) << percentile96_clearance << " mm" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   内部点数: " << clearances.size() << "/" << points_to_check.size() << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   96%分位数间隙: " << std::fixed << std::setprecision(4) << percentile96_clearance << " mm" << std::endl);
     
     return percentile96_clearance;
 }
@@ -944,18 +951,18 @@ double MeshMatcher::optimizePositionAndRotationGA(
             if (num_cores > 0) {
                 int num_threads = static_cast<int>(num_cores * 2);
                 omp_set_num_threads(num_threads);
-                std::cerr << "[GA] 设置 OpenMP 线程数: " << num_threads 
-                          << " (CPU 核心数: " << num_cores << " × 2，利用超线程)" << std::endl;
+                LOG_IF_VERBOSE("[GA] 设置 OpenMP 线程数: " << num_threads 
+                          << " (CPU 核心数: " << num_cores << " × 2，利用超线程)" << std::endl);
             } else {
                 // 如果无法检测核心数，使用默认值（通常是 8）
                 int num_threads = 8;
                 omp_set_num_threads(num_threads);
-                std::cerr << "[GA] 无法检测 CPU 核心数，设置 OpenMP 线程数为默认值: " << num_threads << std::endl;
+                LOG_IF_VERBOSE("[GA] 无法检测 CPU 核心数，设置 OpenMP 线程数为默认值: " << num_threads << std::endl);
             }
         } else {
             // 已通过环境变量设置，使用环境变量的值
             int env_threads_val = std::atoi(env_threads);
-            std::cerr << "[GA] 使用环境变量 OMP_NUM_THREADS=" << env_threads_val << " 设置的线程数" << std::endl;
+            LOG_IF_VERBOSE("[GA] 使用环境变量 OMP_NUM_THREADS=" << env_threads_val << " 设置的线程数" << std::endl);
         }
     }
     #endif
@@ -963,29 +970,29 @@ double MeshMatcher::optimizePositionAndRotationGA(
     // 计算横向轴（纵向轴 × 垂直轴）
     Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
     
-    std::cerr << "\n" << std::string(70, '=') << std::endl;
-    std::cerr << "[GA] ========== 遗传算法优化开始（3D优化）==========" << std::endl;
-    std::cerr << "[GA] 参数配置:" << std::endl;
-    std::cerr << "[GA]   种群大小: " << params.population_size << std::endl;
-    std::cerr << "[GA]   最大代数: " << params.max_generations << std::endl;
-    std::cerr << "[GA]   交叉率: " << params.crossover_rate << std::endl;
-    std::cerr << "[GA]   变异率: " << params.mutation_rate << std::endl;
-    std::cerr << "[GA]   选择率: " << params.selection_rate << std::endl;
-    std::cerr << "[GA]   采样点数: " << params.num_sample_points << std::endl;
-    std::cerr << "[GA]   提前终止: " << (params.early_stopping_generations > 0 ? 
-              std::to_string(params.early_stopping_generations) + "代无改进" : "禁用") << std::endl;
-    std::cerr << "[GA]   搜索范围:" << std::endl;
-    std::cerr << "[GA]     纵向位移: ±" << params.translation_range << "mm" << std::endl;
-    std::cerr << "[GA]     旋转角度: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl;
-    std::cerr << "[GA]     横向位移: ±" << params.lateral_range << "mm" << std::endl;
-    std::cerr << "[GA]   方向轴:" << std::endl;
-    std::cerr << "[GA]     纵向轴: (" << longitudinal_axis[0] << ", " 
-              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl;
-    std::cerr << "[GA]     垂直轴: (" << vertical_axis[0] << ", " 
-              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl;
-    std::cerr << "[GA]     横向轴: (" << lateral_axis[0] << ", " 
-              << lateral_axis[1] << ", " << lateral_axis[2] << ")" << std::endl;
-    std::cerr << std::string(70, '=') << std::endl;
+    LOG_IF_VERBOSE("\n" << std::string(70, '=') << std::endl);
+    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化开始（3D优化）==========" << std::endl);
+    LOG_IF_VERBOSE("[GA] 参数配置:" << std::endl);
+    LOG_IF_VERBOSE("[GA]   种群大小: " << params.population_size << std::endl);
+    LOG_IF_VERBOSE("[GA]   最大代数: " << params.max_generations << std::endl);
+    LOG_IF_VERBOSE("[GA]   交叉率: " << params.crossover_rate << std::endl);
+    LOG_IF_VERBOSE("[GA]   变异率: " << params.mutation_rate << std::endl);
+    LOG_IF_VERBOSE("[GA]   选择率: " << params.selection_rate << std::endl);
+    LOG_IF_VERBOSE("[GA]   采样点数: " << params.num_sample_points << std::endl);
+    LOG_IF_VERBOSE("[GA]   提前终止: " << (params.early_stopping_generations > 0 ? 
+              std::to_string(params.early_stopping_generations) + "代无改进" : "禁用") << std::endl);
+    LOG_IF_VERBOSE("[GA]   搜索范围:" << std::endl);
+    LOG_IF_VERBOSE("[GA]     纵向位移: ±" << params.translation_range << "mm" << std::endl);
+    LOG_IF_VERBOSE("[GA]     旋转角度: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl);
+    LOG_IF_VERBOSE("[GA]     横向位移: ±" << params.lateral_range << "mm" << std::endl);
+    LOG_IF_VERBOSE("[GA]   方向轴:" << std::endl);
+    LOG_IF_VERBOSE("[GA]     纵向轴: (" << longitudinal_axis[0] << ", " 
+              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl);
+    LOG_IF_VERBOSE("[GA]     垂直轴: (" << vertical_axis[0] << ", " 
+              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl);
+    LOG_IF_VERBOSE("[GA]     横向轴: (" << lateral_axis[0] << ", " 
+              << lateral_axis[1] << ", " << lateral_axis[2] << ")" << std::endl);
+    LOG_IF_VERBOSE(std::string(70, '=') << std::endl);
     
     // 计算质心（用于变换）
     Eigen::Vector3d target_center(0, 0, 0);
@@ -1036,7 +1043,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
     auto bvh_build_end = std::chrono::high_resolution_clock::now();
     auto bvh_build_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         bvh_build_end - bvh_build_start).count();
-    std::cerr << "[GA] BVH 构建完成，耗时: " << bvh_build_time << "ms" << std::endl;
+    LOG_IF_VERBOSE("[GA] BVH 构建完成，耗时: " << bvh_build_time << "ms" << std::endl);
     
     // 适应度函数：计算包裹率（使用 BVH 加速）
     auto computeFitness = [&](const Individual& ind) -> double {
@@ -1093,7 +1100,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
     
     // 2. 评估初始种群
     auto eval_start = std::chrono::high_resolution_clock::now();
-    std::cerr << "\n[GA] 阶段1: 评估初始种群 (" << params.population_size << " 个个体)..." << std::endl;
+    LOG_IF_VERBOSE("\n[GA] 阶段1: 评估初始种群 (" << params.population_size << " 个个体)..." << std::endl);
     
     auto t_fitness_start = std::chrono::high_resolution_clock::now();
     #ifdef _OPENMP
@@ -1120,26 +1127,26 @@ double MeshMatcher::optimizePositionAndRotationGA(
     double avg_fitness = std::accumulate(population.begin(), population.end(), 0.0,
         [](double sum, const Individual& ind) { return sum + ind.fitness; }) / params.population_size;
     
-    std::cerr << "[GA] ✓ 初始种群评估完成，总耗时: " << eval_time << "ms" << std::endl;
-    std::cerr << "[GA]   性能分析:" << std::endl;
-    std::cerr << "[GA]     - 适应度计算: " << t_fitness_ms << "ms (" << params.population_size 
+    LOG_IF_VERBOSE("[GA] ✓ 初始种群评估完成，总耗时: " << eval_time << "ms" << std::endl);
+    LOG_IF_VERBOSE("[GA]   性能分析:" << std::endl);
+    LOG_IF_VERBOSE("[GA]     - 适应度计算: " << t_fitness_ms << "ms (" << params.population_size 
               << "次, 平均: " << std::fixed << std::setprecision(2) 
-              << (t_fitness_ms / static_cast<double>(params.population_size)) << "ms/次)" << std::endl;
-    std::cerr << "[GA]     - 排序: " << t_sort_ms << "ms" << std::endl;
-    std::cerr << "[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
-              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl;
-    std::cerr << "[GA]   平均适应度: " << avg_fitness 
-              << " (包裹率: " << (avg_fitness * 100) << "%)" << std::endl;
-    std::cerr << "[GA]   最佳个体: 纵向=" << std::fixed << std::setprecision(2) 
+              << (t_fitness_ms / static_cast<double>(params.population_size)) << "ms/次)" << std::endl);
+    LOG_IF_VERBOSE("[GA]     - 排序: " << t_sort_ms << "ms" << std::endl);
+    LOG_IF_VERBOSE("[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl);
+    LOG_IF_VERBOSE("[GA]   平均适应度: " << avg_fitness 
+              << " (包裹率: " << (avg_fitness * 100) << "%)" << std::endl);
+    LOG_IF_VERBOSE("[GA]   最佳个体: 纵向=" << std::fixed << std::setprecision(2) 
               << best_individual.translation << "mm, 旋转=" 
               << (best_individual.rotation * 180.0 / M_PI) << "°, 横向=" 
-              << best_individual.lateral << "mm" << std::endl;
+              << best_individual.lateral << "mm" << std::endl);
     
     // 检查初始种群是否已达到目标包裹率
     if (params.target_wrapping_ratio > 0.0 && best_fitness >= params.target_wrapping_ratio) {
-        std::cerr << "\n[GA] ✓ 初始种群已达到目标包裹率 (" << std::fixed << std::setprecision(2) 
+        LOG_IF_VERBOSE("\n[GA] ✓ 初始种群已达到目标包裹率 (" << std::fixed << std::setprecision(2) 
                   << (params.target_wrapping_ratio * 100) << "%)，当前包裹率: " 
-                  << (best_fitness * 100) << "%，无需继续进化" << std::endl;
+                  << (best_fitness * 100) << "%，无需继续进化" << std::endl);
         
         // 保存初始状态到历史记录
         std::vector<GenerationState> history;
@@ -1205,7 +1212,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
     }
     
     // 3. 进化循环
-    std::cerr << "\n[GA] 阶段2: 开始进化循环..." << std::endl;
+    LOG_IF_VERBOSE("\n[GA] 阶段2: 开始进化循环..." << std::endl);
     int improvement_count = 0;
     int no_improvement_count = 0;  // 连续未改进的代数
     
@@ -1340,22 +1347,20 @@ double MeshMatcher::optimizePositionAndRotationGA(
         std_dev = std::sqrt(std_dev / params.population_size);
         
         // 详细日志
-        std::cerr << "[GA] ┌─ 代数 " << std::setw(2) << (generation + 1) << "/" << params.max_generations << std::endl;
-        std::cerr << "[GA] │  最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+        LOG_IF_VERBOSE("[GA] ┌─ 代数 " << std::setw(2) << (generation + 1) << "/" << params.max_generations << std::endl);
+        LOG_IF_VERBOSE("[GA] │  最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
                   << " (" << (best_fitness * 100) << "%)" 
-                  << (improved ? " ⬆️ 提升!" : "") << std::endl;
-        std::cerr << "[GA] │  平均适应度: " << avg_fitness << " (" << (avg_fitness * 100) << "%)" << std::endl;
-        std::cerr << "[GA] │  标准差: " << std::setprecision(4) << std_dev << std::endl;
-        std::cerr << "[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation 
+                  << (improved ? " ⬆️ 提升!" : "") << std::endl);
+        LOG_IF_VERBOSE("[GA] │  平均适应度: " << avg_fitness << " (" << (avg_fitness * 100) << "%)" << std::endl);
+        LOG_IF_VERBOSE("[GA] │  标准差: " << std::setprecision(4) << std_dev << std::endl);
+        LOG_IF_VERBOSE("[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation 
                   << "mm, 旋转=" << (best_individual.rotation * 180.0 / M_PI) 
-                  << "°, 横向=" << best_individual.lateral << "mm" << std::endl;
-        std::cerr << "[GA] │  操作统计: 交叉=" << crossover_count 
-                  << ", 变异=" << mutation_count << std::endl;
-        std::cerr << "[GA] │  性能分析:" << std::endl;
-        std::cerr << "[GA] │    选择耗时: " << t_selection_ms << "ms" << std::endl;
-        std::cerr << "[GA] │    进化耗时: " << t_evolution_ms << "ms" << std::endl;
-        std::cerr << "[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
-                  << gen_fitness_calls << "次";
+                  << "°, 横向=" << best_individual.lateral << "mm" << std::endl);
+        LOG_IF_VERBOSE("[GA] │  操作统计: 交叉=" << crossover_count 
+                  << ", 变异=" << mutation_count << std::endl);
+        LOG_IF_VERBOSE("[GA] │  性能分析:" << std::endl);
+        LOG_IF_VERBOSE("[GA] │    选择耗时: " << t_selection_ms << "ms" << std::endl);
+        LOG_IF_VERBOSE("[GA] │    进化耗时: " << t_evolution_ms << "ms" << std::endl);
         #ifdef _OPENMP
         // 获取并行线程数（兼容 macOS 和 Linux）
         int num_threads = 1;
@@ -1367,15 +1372,26 @@ double MeshMatcher::optimizePositionAndRotationGA(
             }
         }
         if (num_threads > 1) {
-            std::cerr << ", 并行线程数: " << num_threads;
+            LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
+                      << gen_fitness_calls << "次, 并行线程数: " << num_threads
+                      << ", 平均: " << std::fixed << std::setprecision(1)
+                      << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
+                      << "ms/次)" << std::endl);
+        } else {
+            LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
+                      << gen_fitness_calls << "次, 平均: " << std::fixed << std::setprecision(1)
+                      << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
+                      << "ms/次)" << std::endl);
         }
-        #endif
-        std::cerr << ", 平均: " << std::fixed << std::setprecision(1)
+        #else
+        LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
+                  << gen_fitness_calls << "次, 平均: " << std::fixed << std::setprecision(1)
                   << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
-                  << "ms/次)" << std::endl;
-        std::cerr << "[GA] │    排序耗时: " << t_sort_ms << "ms" << std::endl;
-        std::cerr << "[GA] │    总耗时: " << gen_time << "ms" << std::endl;
-        std::cerr << "[GA] └" << std::endl;
+                  << "ms/次)" << std::endl);
+        #endif
+        LOG_IF_VERBOSE("[GA] │    排序耗时: " << t_sort_ms << "ms" << std::endl);
+        LOG_IF_VERBOSE("[GA] │    总耗时: " << gen_time << "ms" << std::endl);
+        LOG_IF_VERBOSE("[GA] └" << std::endl);
 
         // ========= 回放：保存本代状态 =========
         {
@@ -1395,24 +1411,24 @@ double MeshMatcher::optimizePositionAndRotationGA(
         
         // 检查目标包裹率：达到目标包裹率即停止
         if (params.target_wrapping_ratio > 0.0 && best_fitness >= params.target_wrapping_ratio) {
-            std::cerr << "\n[GA] ✓ 达到目标包裹率 (" << std::fixed << std::setprecision(2) 
+            LOG_IF_VERBOSE("\n[GA] ✓ 达到目标包裹率 (" << std::fixed << std::setprecision(2) 
                       << (params.target_wrapping_ratio * 100) << "%)，当前包裹率: " 
-                      << (best_fitness * 100) << "%，提前退出" << std::endl;
+                      << (best_fitness * 100) << "%，提前退出" << std::endl);
             break;
         }
         
         // 检查收敛
         if (best_fitness >= 1.0 - params.convergence_threshold) {
-            std::cerr << "\n[GA] ✓ 达到目标适应度 (" << (best_fitness * 100) << "%)，提前退出" << std::endl;
+            LOG_IF_VERBOSE("\n[GA] ✓ 达到目标适应度 (" << (best_fitness * 100) << "%)，提前退出" << std::endl);
             break;
         }
         
         // 检查提前终止：连续N代无改进
         if (params.early_stopping_generations > 0 && 
             no_improvement_count >= params.early_stopping_generations) {
-            std::cerr << "\n[GA] ✓ 连续 " << no_improvement_count 
+            LOG_IF_VERBOSE("\n[GA] ✓ 连续 " << no_improvement_count 
                       << " 代无改进，提前终止（当前最佳适应度: " 
-                      << std::fixed << std::setprecision(4) << (best_fitness * 100) << "%）" << std::endl;
+                      << std::fixed << std::setprecision(4) << (best_fitness * 100) << "%）" << std::endl);
             break;
         }
     }
@@ -1421,24 +1437,24 @@ double MeshMatcher::optimizePositionAndRotationGA(
     optimal_vertical_offset = 0.0;  // 垂直位移固定为0（不再优化）
     optimal_lateral_offset = best_individual.lateral;
     
-    std::cerr << "\n" << std::string(70, '=') << std::endl;
-    std::cerr << "[GA] ========== 遗传算法优化完成（3D优化）==========" << std::endl;
-    std::cerr << "[GA] 最终结果:" << std::endl;
-    std::cerr << "[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
-              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl;
-    std::cerr << "[GA]   最优参数:" << std::endl;
-    std::cerr << "[GA]     纵向位移: " << std::setprecision(2) << best_individual.translation << " mm" << std::endl;
-    std::cerr << "[GA]     旋转角度: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl;
-    std::cerr << "[GA]     横向位移: " << best_individual.lateral << " mm" << std::endl;
-    std::cerr << "[GA]   改进次数: " << improvement_count << " 次" << std::endl;
-    std::cerr << "[GA]   性能统计:" << std::endl;
-    std::cerr << "[GA]     适应度计算总耗时: " << total_fitness_time_ms << "ms" << std::endl;
-    std::cerr << "[GA]     适应度计算总次数: " << total_fitness_calls << " 次" << std::endl;
+    LOG_IF_VERBOSE("\n" << std::string(70, '=') << std::endl);
+    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化完成（3D优化）==========" << std::endl);
+    LOG_IF_VERBOSE("[GA] 最终结果:" << std::endl);
+    LOG_IF_VERBOSE("[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+              << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl);
+    LOG_IF_VERBOSE("[GA]   最优参数:" << std::endl);
+    LOG_IF_VERBOSE("[GA]     纵向位移: " << std::setprecision(2) << best_individual.translation << " mm" << std::endl);
+    LOG_IF_VERBOSE("[GA]     旋转角度: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl);
+    LOG_IF_VERBOSE("[GA]     横向位移: " << best_individual.lateral << " mm" << std::endl);
+    LOG_IF_VERBOSE("[GA]   改进次数: " << improvement_count << " 次" << std::endl);
+    LOG_IF_VERBOSE("[GA]   性能统计:" << std::endl);
+    LOG_IF_VERBOSE("[GA]     适应度计算总耗时: " << total_fitness_time_ms << "ms" << std::endl);
+    LOG_IF_VERBOSE("[GA]     适应度计算总次数: " << total_fitness_calls << " 次" << std::endl);
     if (total_fitness_calls > 0) {
-        std::cerr << "[GA]     平均每次适应度计算: " << std::setprecision(2) 
-                  << (static_cast<double>(total_fitness_time_ms) / total_fitness_calls) << "ms" << std::endl;
+        LOG_IF_VERBOSE("[GA]     平均每次适应度计算: " << std::setprecision(2) 
+                  << (static_cast<double>(total_fitness_time_ms) / total_fitness_calls) << "ms" << std::endl);
     }
-    std::cerr << std::string(70, '=') << "\n" << std::endl;
+    LOG_IF_VERBOSE(std::string(70, '=') << "\n" << std::endl);
 
     // 保存到线程本地，供 matchOptimized 填充到 MatchResult.generation_history
     g_last_ga_generation_history = std::move(history);
@@ -1453,7 +1469,7 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     MatchResult result;
     
     if (target_vertices_.empty() || candidate_vertices_.empty()) {
-        std::cerr << "[LOG] matchOptimized: Empty vertices, returning early" << std::endl;
+        LOG_IF_VERBOSE("[LOG] matchOptimized: Empty vertices, returning early" << std::endl);
         return result;
     }
     
@@ -1462,24 +1478,24 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     result.volume = computeVolume(candidate_vertices_, candidate_faces_);
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt_volume = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 0: 计算体积耗时: " << dt_volume << "ms" << std::endl;
+    LOG_IF_VERBOSE("[LOG] Step 0: 计算体积耗时: " << dt_volume << "ms" << std::endl);
     
     // 1. 对齐方向（旋转鞋模使其与粗胚对齐）
     t0 = std::chrono::high_resolution_clock::now();
     std::vector<double> aligned_target = target_vertices_;
-    std::cerr << "[LOG] Step 1: 开始方向对齐..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 1: 开始方向对齐..." << std::endl);
     Eigen::Matrix3d rotation_matrix = alignDirections(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_
     );
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_align = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 1: 方向对齐耗时: " << dt_align << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 1: 方向对齐耗时: " << dt_align << "ms" << std::endl);
     
     // 2. 验证方向对齐（用于记录对齐信息）
     // 注意：方向已经通过 alignDirections 自动对齐，所以总是满足约束
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 2: 开始验证方向对齐..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 2: 开始验证方向对齐..." << std::endl);
     result.direction_alignment = verifyDirectionAlignment(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_
@@ -1487,20 +1503,20 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     result.meets_direction_constraints = true;  // 已经对齐，所以总是满足
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_verify = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 2: 验证方向对齐耗时: " << dt_verify << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 2: 验证方向对齐耗时: " << dt_verify << "ms" << std::endl);
     
     // 3. 计算纵向轴和垂直轴（使用粗胚的轴）
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 3: 开始计算方向轴..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 3: 开始计算方向轴..." << std::endl);
     Eigen::Vector3d longitudinal_axis = computeLongitudinalAxis(candidate_vertices_, candidate_faces_);
     Eigen::Vector3d vertical_axis = computeVerticalAxis(candidate_vertices_, candidate_faces_);
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_axis = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 3: 计算方向轴耗时: " << dt_axis << "ms" << std::endl;
-    std::cerr << "[LOG]   纵向轴: (" << longitudinal_axis[0] << ", " 
-              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl;
-    std::cerr << "[LOG]   垂直轴: (" << vertical_axis[0] << ", " 
-              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 3: 计算方向轴耗时: " << dt_axis << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   纵向轴: (" << longitudinal_axis[0] << ", " 
+              << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   垂直轴: (" << vertical_axis[0] << ", " 
+              << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl);
     
     // 4. 优化位置和旋转（使用遗传算法）
     t0 = std::chrono::high_resolution_clock::now();
@@ -1508,7 +1524,7 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     double optimal_vertical_offset = 0.0;
     double optimal_lateral_offset = 0.0;  // 横向位移
     
-    std::cerr << "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl;
+    LOG_IF_VERBOSE( "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl);
     result.optimal_translation = optimizePositionAndRotationGA(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_,
@@ -1524,15 +1540,15 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_optimize = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 4: 优化完成，耗时: " << dt_optimize << "ms" << std::endl;
-    std::cerr << "[LOG]   最优参数: 纵向位移=" << std::fixed << std::setprecision(2) 
+    LOG_IF_VERBOSE( "[LOG] Step 4: 优化完成，耗时: " << dt_optimize << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   最优参数: 纵向位移=" << std::fixed << std::setprecision(2) 
               << result.optimal_translation << "mm, 旋转角度=" 
               << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°, 横向位移=" 
-              << optimal_lateral_offset << "mm" << std::endl;
+              << optimal_lateral_offset << "mm" << std::endl);
     
     // 5. 应用最优相对平移和相对旋转
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "[LOG] Step 5: 开始应用最优相对平移和相对旋转..." << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 5: 开始应用最优相对平移和相对旋转..." << std::endl);
     
     // 计算旋转矩阵（用于最终变换粗胚）
     Eigen::Matrix3d final_rotation_matrix = computeRotationMatrixAroundAxis(longitudinal_axis, optimal_relative_rotation_angle_rad);
@@ -1577,11 +1593,11 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_translate = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl);
     
     // 6. 计算体积包裹率和96%分位数间隙
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率和96%分位数间隙..." << std::endl;
+    LOG_IF_VERBOSE( "\n[LOG] Step 6: 开始计算最终包裹率和96%分位数间隙..." << std::endl);
     
     // 构建KD-tree（用于包裹率和间隙计算）
     KDTree clearance_tree;
@@ -1606,10 +1622,10 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_wrapping = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 6: 包裹率和96%分位数间隙计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
-    std::cerr << "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
-              << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl;
-    std::cerr << "[LOG]   96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl;
+    LOG_IF_VERBOSE( "[LOG] Step 6: 包裹率和96%分位数间隙计算完成，耗时: " << dt_wrapping << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
+              << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl);
     
     // 确定目标包裹率：优先使用 GA 参数中的目标包裹率，否则使用 wrapping_threshold
     double target_wrapping = (ga_params.target_wrapping_ratio > 0.0) 
@@ -1620,18 +1636,18 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     result.is_fully_wrapped = (result.wrapping_ratio >= target_wrapping);
     
     if (!result.is_fully_wrapped) {
-        std::cerr << "[LOG] ⚠️  包裹率未达到目标值 (" << std::fixed << std::setprecision(2) 
+        LOG_IF_VERBOSE( "[LOG] ⚠️  包裹率未达到目标值 (" << std::fixed << std::setprecision(2) 
                   << (target_wrapping * 100) << "%)，当前包裹率: " 
-                  << (result.wrapping_ratio * 100) << "%，不满足匹配条件" << std::endl;
+                  << (result.wrapping_ratio * 100) << "%，不满足匹配条件" << std::endl);
         auto end_total = std::chrono::high_resolution_clock::now();
         auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
-        std::cerr << "[LOG] 总耗时: " << total_time << "ms" << std::endl;
+        LOG_IF_VERBOSE( "[LOG] 总耗时: " << total_time << "ms" << std::endl);
         return result;  // 未达到目标包裹率，不满足条件
     }
     
     // 7. 计算体积和匹配分数
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "\n[LOG] Step 7: 计算最终体积和匹配分数..." << std::endl;
+    LOG_IF_VERBOSE( "\n[LOG] Step 7: 计算最终体积和匹配分数..." << std::endl);
     
     result.volume = computeVolume(optimized_candidate, candidate_faces_);
     
@@ -1648,39 +1664,39 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
     
     // 输出最终结果摘要
-    std::cerr << "\n" << std::string(70, '=') << std::endl;
-    std::cerr << "[LOG] ========== 匹配结果摘要 ==========" << std::endl;
-    std::cerr << "[LOG] 包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
-              << " (" << (result.wrapping_ratio * 100) << "%) ✅" << std::endl;
-    std::cerr << "[LOG] 96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl;
-    std::cerr << "[LOG] 体积: " << std::setprecision(2) << result.volume << " mm³" << std::endl;
-    std::cerr << "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl;
-    std::cerr << "[LOG] 最优参数:" << std::endl;
-    std::cerr << "[LOG]   纵向位移: " << std::setprecision(2) << result.optimal_translation << " mm" << std::endl;
-    std::cerr << "[LOG]   旋转角度: " << result.optimal_rotation_angle_deg << " °" << std::endl;
-    std::cerr << "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl;
-    std::cerr << "[LOG] ========== 性能分析 ==========" << std::endl;
-    std::cerr << "[LOG] 各步骤耗时及占比:" << std::endl;
+    LOG_IF_VERBOSE( "\n" << std::string(70, '=') << std::endl);
+    LOG_IF_VERBOSE( "[LOG] ========== 匹配结果摘要 ==========" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
+              << " (" << (result.wrapping_ratio * 100) << "%) ✅" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 体积: " << std::setprecision(2) << result.volume << " mm³" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 最优参数:" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   纵向位移: " << std::setprecision(2) << result.optimal_translation << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   旋转角度: " << result.optimal_rotation_angle_deg << " °" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] ========== 性能分析 ==========" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] 各步骤耗时及占比:" << std::endl);
     if (total_time > 0) {
-        std::cerr << "[LOG]   Step 0 (计算体积): " << dt_volume << "ms (" 
-                  << std::setprecision(1) << (100.0 * dt_volume / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 1 (方向对齐): " << dt_align << "ms (" 
-                  << (100.0 * dt_align / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 2 (验证对齐): " << dt_verify << "ms (" 
-                  << (100.0 * dt_verify / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 3 (计算轴): " << dt_axis << "ms (" 
-                  << (100.0 * dt_axis / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 4 (优化): " << dt_optimize << "ms (" 
-                  << (100.0 * dt_optimize / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 5 (应用变换): " << dt_translate << "ms (" 
-                  << (100.0 * dt_translate / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 6 (包裹率): " << dt_wrapping << "ms (" 
-                  << (100.0 * dt_wrapping / total_time) << "%)" << std::endl;
-        std::cerr << "[LOG]   Step 7 (最终计算): " << dt_score << "ms (" 
-                  << (100.0 * dt_score / total_time) << "%)" << std::endl;
+        LOG_IF_VERBOSE( "[LOG]   Step 0 (计算体积): " << dt_volume << "ms (" 
+                  << std::setprecision(1) << (100.0 * dt_volume / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 1 (方向对齐): " << dt_align << "ms (" 
+                  << (100.0 * dt_align / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 2 (验证对齐): " << dt_verify << "ms (" 
+                  << (100.0 * dt_verify / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 3 (计算轴): " << dt_axis << "ms (" 
+                  << (100.0 * dt_axis / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 4 (优化): " << dt_optimize << "ms (" 
+                  << (100.0 * dt_optimize / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 5 (应用变换): " << dt_translate << "ms (" 
+                  << (100.0 * dt_translate / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 6 (包裹率): " << dt_wrapping << "ms (" 
+                  << (100.0 * dt_wrapping / total_time) << "%)" << std::endl);
+        LOG_IF_VERBOSE( "[LOG]   Step 7 (最终计算): " << dt_score << "ms (" 
+                  << (100.0 * dt_score / total_time) << "%)" << std::endl);
     }
-    std::cerr << "[LOG]   总耗时: " << total_time << "ms" << std::endl;
-    std::cerr << std::string(70, '=') << "\n" << std::endl;
+    LOG_IF_VERBOSE( "[LOG]   总耗时: " << total_time << "ms" << std::endl);
+    LOG_IF_VERBOSE( std::string(70, '=') << "\n" << std::endl);
     
     return result;
 }

@@ -65,6 +65,7 @@ def find_optimal_match(
     
     # 创建匹配器
     matcher = mesh_matcher.MeshMatcher()
+    matcher.set_verbose(verbose)
     matcher.load_target_mesh(target_vertices, target_faces)
     
     # 遍历所有候选粗胚

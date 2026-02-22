@@ -114,6 +114,9 @@ PYBIND11_MODULE(mesh_matcher, m) {
             
             return matcher.loadCandidateMesh(v_data, f_data);
         }, "Load candidate mesh (rough blank)")
+        .def("set_verbose", &MeshMatcher::setVerbose,
+             py::arg("verbose"),
+             "Set whether to output verbose logging")
         .def("match_optimized", [](MeshMatcher& matcher,
                                    double wrapping_threshold,
                                    py::object ga_params_obj) {
