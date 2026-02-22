@@ -33,12 +33,9 @@ except ImportError as e:
 def find_optimal_match(
     target_file: Path,
     candidate_files: List[Path],
-    penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
     verbose: bool = False,
-    gd_params: Optional[mesh_matcher.GradientDescentParams] = None,
-    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
-    use_genetic_algorithm: bool = True  # 默认使用GA
+    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None
 ) -> Tuple[Optional[Path], dict]:
     """
     使用优化算法找到最优匹配
@@ -46,7 +43,6 @@ def find_optimal_match(
     Args:
         target_file: 目标鞋模文件路径
         candidate_files: 候选粗胚文件路径列表
-        penetration_tolerance: 穿模检测容差
         wrapping_threshold: 包裹率阈值（默认0.99，即99%）
         verbose: 是否输出详细信息
         
@@ -93,11 +89,8 @@ def find_optimal_match(
             # 执行优化匹配
             start_time = time.time()
             result = matcher.match_optimized(
-                penetration_tolerance=penetration_tolerance,
                 wrapping_threshold=wrapping_threshold,
-                gd_params=gd_params if gd_params else mesh_matcher.GradientDescentParams(),
-                ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams(),
-                use_genetic_algorithm=use_genetic_algorithm
+                ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams()
             )
             match_time = time.time() - start_time
             
@@ -113,15 +106,13 @@ def find_optimal_match(
                 print(f"    方向约束满足: {'✅' if result.meets_direction_constraints else '❌'}")
                 print(f"  包裹率: {result.wrapping_ratio:.4f} ({result.wrapping_ratio*100:.2f}%)")
                 print(f"  完全包裹: {'✅' if result.is_fully_wrapped else '❌'}")
-                print(f"  无穿模: {'✅' if not result.has_penetration else '❌'}")
                 print(f"  体积: {result.volume:.2f}")
                 print(f"  最优平移: {result.optimal_translation:.4f}")
                 print(f"  匹配时间: {match_time*1000:.2f}ms")
             
             # 检查是否满足所有条件
             if (result.meets_direction_constraints and
-                result.is_fully_wrapped and
-                not result.has_penetration):
+                result.is_fully_wrapped):
                 valid_matches.append((result, match_time))
                 if verbose:
                     print("  ✅ 满足所有匹配条件")
@@ -132,8 +123,6 @@ def find_optimal_match(
                         reasons.append("方向约束")
                     if not result.is_fully_wrapped:
                         reasons.append("不完全包裹")
-                    if result.has_penetration:
-                        reasons.append("有穿模")
                     print(f"  ❌ 不满足匹配条件: {', '.join(reasons)}")
                     
         except ThreeDMFileError as e:
@@ -179,22 +168,18 @@ def find_optimal_match(
 
 def match_testcase_optimized(
     testcase_dir: Path,
-    penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
     verbose: bool = False,
-    gd_params: Optional[mesh_matcher.GradientDescentParams] = None,
-    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
-    use_genetic_algorithm: bool = True  # 默认使用GA
+    ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None
 ) -> dict:
     """
     使用优化算法匹配单个测试用例
     
     Args:
         testcase_dir: 测试用例目录路径
-        penetration_tolerance: 穿模检测容差
         wrapping_threshold: 包裹率阈值
         verbose: 是否输出详细信息
-        gd_params: 梯度下降参数（可选）
+        ga_params: 遗传算法参数（可选）
         
     Returns:
         dict: 匹配结果统计
@@ -226,12 +211,9 @@ def match_testcase_optimized(
         
         best_match, match_info = find_optimal_match(
             target_file, candidate_files,
-            penetration_tolerance=penetration_tolerance,
             wrapping_threshold=wrapping_threshold,
             verbose=verbose,
-            gd_params=gd_params,
-            ga_params=ga_params,
-            use_genetic_algorithm=use_genetic_algorithm
+            ga_params=ga_params
         )
         
         result = {
@@ -284,119 +266,10 @@ def main():
     )
     
     parser.add_argument(
-        '--penetration-tolerance',
-        type=float,
-        default=0.01,
-        help='穿模检测容差（默认: 0.01）'
-    )
-    
-    parser.add_argument(
         '--wrapping-threshold',
         type=float,
         default=0.99,
         help='包裹率阈值（默认: 0.99，即99%%）'
-    )
-    
-    # 梯度下降参数
-    parser.add_argument(
-        '--lr-translation',
-        type=float,
-        default=0.2,
-        help='纵向位移学习率（默认: 0.2）'
-    )
-    parser.add_argument(
-        '--lr-rotation',
-        type=float,
-        default=0.05,
-        help='旋转角度学习率（弧度，默认: 0.05）'
-    )
-    parser.add_argument(
-        '--lr-vertical',
-        type=float,
-        default=0.2,
-        help='垂直位移学习率（默认: 0.2）'
-    )
-    parser.add_argument(
-        '--h-translation',
-        type=float,
-        default=0.1,
-        help='纵向位移梯度计算步长（mm，默认: 0.1）'
-    )
-    parser.add_argument(
-        '--h-rotation',
-        type=float,
-        default=0.01,
-        help='旋转角度梯度计算步长（弧度，默认: 0.01，约0.57度）'
-    )
-    parser.add_argument(
-        '--h-vertical',
-        type=float,
-        default=0.1,
-        help='垂直位移梯度计算步长（mm，默认: 0.1）'
-    )
-    parser.add_argument(
-        '--max-iterations',
-        type=int,
-        default=50,
-        help='最大迭代次数（默认: 50）'
-    )
-    parser.add_argument(
-        '--convergence-threshold',
-        type=float,
-        default=0.001,
-        help='收敛阈值（默认: 0.001）'
-    )
-    parser.add_argument(
-        '--num-sample-points',
-        type=int,
-        default=500,
-        help='采样点数量（默认: 500）'
-    )
-    
-    # Adam优化器参数
-    parser.add_argument(
-        '--use-adam',
-        action='store_true',
-        default=True,
-        help='使用Adam优化器（默认: True）'
-    )
-    parser.add_argument(
-        '--no-adam',
-        dest='use_adam',
-        action='store_false',
-        help='不使用Adam优化器，使用标准梯度下降'
-    )
-    parser.add_argument(
-        '--beta1',
-        type=float,
-        default=0.9,
-        help='Adam动量衰减率（默认: 0.9）'
-    )
-    parser.add_argument(
-        '--beta2',
-        type=float,
-        default=0.999,
-        help='Adam二阶矩衰减率（默认: 0.999）'
-    )
-    parser.add_argument(
-        '--epsilon',
-        type=float,
-        default=1e-8,
-        help='Adam数值稳定性参数（默认: 1e-8）'
-    )
-    
-    # 算法选择
-    parser.add_argument(
-        '--use-ga',
-        action='store_true',
-        default=True,
-        help='使用遗传算法（默认: True，推荐）'
-    )
-    parser.add_argument(
-        '--use-gd',
-        dest='use_ga',
-        action='store_false',
-        help='使用梯度下降算法（不推荐）'
     )
     
     # 遗传算法参数
@@ -449,12 +322,6 @@ def main():
         help='GA旋转角度搜索范围（度，默认: ±180）'
     )
     parser.add_argument(
-        '--ga-vertical-range',
-        type=float,
-        default=20.0,
-        help='GA垂直位移搜索范围（mm，默认: ±20）'
-    )
-    parser.add_argument(
         '--ga-lateral-range',
         type=float,
         default=30.0,
@@ -466,6 +333,12 @@ def main():
         default=0.96,
         help='GA目标包裹率（默认: 0.96，达到此值即停止优化，0表示禁用）'
     )
+    parser.add_argument(
+        '--num-sample-points',
+        type=int,
+        default=500,
+        help='采样点数量（默认: 500）'
+    )
     
     args = parser.parse_args()
     
@@ -473,23 +346,6 @@ def main():
     if not testcase_dir.exists():
         print(f"❌ 错误: 测试用例目录不存在: {testcase_dir}")
         sys.exit(1)
-    
-    # 创建梯度下降参数对象
-    gd_params = mesh_matcher.GradientDescentParams()
-    gd_params.learning_rate_translation = args.lr_translation
-    gd_params.learning_rate_rotation = args.lr_rotation
-    gd_params.learning_rate_vertical = args.lr_vertical
-    gd_params.h_translation = args.h_translation
-    gd_params.h_rotation = args.h_rotation
-    gd_params.h_vertical = args.h_vertical
-    gd_params.max_iterations = args.max_iterations
-    gd_params.convergence_threshold = args.convergence_threshold
-    gd_params.num_sample_points = args.num_sample_points
-    # Adam优化器参数
-    gd_params.use_adam = args.use_adam
-    gd_params.beta1 = args.beta1
-    gd_params.beta2 = args.beta2
-    gd_params.epsilon = args.epsilon
     
     # 创建遗传算法参数对象
     ga_params = mesh_matcher.GeneticAlgorithmParams()
@@ -501,27 +357,21 @@ def main():
     ga_params.selection_rate = args.ga_selection_rate
     ga_params.translation_range = args.ga_translation_range
     ga_params.rotation_range = args.ga_rotation_range * 3.14159265358979323846 / 180.0  # 度转弧度
-    ga_params.vertical_range = args.ga_vertical_range
     ga_params.lateral_range = args.ga_lateral_range
     ga_params.num_sample_points = args.num_sample_points
     ga_params.target_wrapping_ratio = args.ga_target_wrapping_ratio
     
     if args.verbose:
-        algorithm_name = "遗传算法 (GA)" if args.use_ga else "梯度下降 (GD)"
         print(f"\n{'='*70}")
-        print(f"使用算法: {algorithm_name}")
-        if args.use_ga:
-            print(f"GA参数: 种群={ga_params.population_size}, 代数={ga_params.max_generations}")
+        print(f"使用算法: 遗传算法 (GA)")
+        print(f"GA参数: 种群={ga_params.population_size}, 代数={ga_params.max_generations}")
         print(f"{'='*70}\n")
     
     result = match_testcase_optimized(
         testcase_dir,
-        penetration_tolerance=args.penetration_tolerance,
         wrapping_threshold=args.wrapping_threshold,
         verbose=args.verbose,
-        gd_params=gd_params,
-        ga_params=ga_params,
-        use_genetic_algorithm=args.use_ga
+        ga_params=ga_params
     )
     
     if 'error' in result:

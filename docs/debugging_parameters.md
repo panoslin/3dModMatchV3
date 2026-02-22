@@ -5,7 +5,7 @@
 ## 📋 目录
 
 - [Python 命令行参数](#python-命令行参数)
-- [梯度下降参数（可通过命令行调整）](#梯度下降参数可通过命令行调整)
+- [遗传算法参数（可通过命令行调整）](#遗传算法参数可通过命令行调整)
 - [常用调试命令](#常用调试命令)
 - [参数调优建议](#参数调优建议)
 
@@ -13,37 +13,11 @@
 
 ## 🐍 Python 命令行参数
 
-这些参数可以通过 `match_shoe_mold_optimized.py` 的命令行参数直接调整。
+这些参数可以通过 `matcher.py` 的命令行参数直接调整。
 
-**注意**: `--angle-tolerance` 参数已移除。方向对齐现在通过 `alignDirections` 函数自动完成，确保鞋模和粗胚的方向完全一致，不再需要容差参数。
+### 1. 包裹率阈值 (`--wrapping-threshold`)
 
----
-
-### 1. 穿模检测容差 (`--penetration-tolerance`)
-
-**参数名**: `--penetration-tolerance` 或 `-p`  
-**类型**: `float`  
-**默认值**: `0.01` mm  
-**说明**: 判断点是否在网格内部的容差。距离小于此值的点被认为在内部。
-
-**Docker 命令**:
-```bash
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.1 \
-  --verbose
-```
-
-**调优建议**:
-- 默认 `0.01` mm：高精度
-- `0.1` mm：中等精度，计算更快
-- `0.5` mm：低精度，适合快速测试
-
----
-
-### 2. 包裹率阈值 (`--wrapping-threshold`)
-
-**参数名**: `--wrapping-threshold` 或 `-w`  
+**参数名**: `--wrapping-threshold`  
 **类型**: `float`  
 **默认值**: `0.99` (99%)  
 **说明**: 匹配成功所需的最低包裹率。只有包裹率 ≥ 此值的候选才会被接受。
@@ -52,13 +26,13 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 要求 100% 包裹（最严格）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 1.0 \
   --verbose
 
 # 要求 95% 包裹（较宽松）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 0.95 \
   --verbose
 ```
@@ -70,165 +44,141 @@ docker-compose run --rm test-3dm-loader \
 
 ---
 
-### 3. 详细输出 (`--verbose`)
+### 2. 详细输出 (`--verbose`)
 
 **参数名**: `--verbose` 或 `-v`  
 **类型**: `bool` (flag)  
 **默认值**: `False`  
-**说明**: 是否输出详细的匹配过程信息，包括每个步骤的耗时、梯度下降迭代过程等。
+**说明**: 是否输出详细的匹配过程信息，包括方向对齐、遗传算法迭代过程等。
 
 **Docker 命令**:
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --verbose
 ```
 
 ---
 
-## ⚙️ 梯度下降参数（可通过命令行调整）
+## ⚙️ 遗传算法参数（可通过命令行调整）
 
 这些参数现在可以通过命令行直接调整，无需修改代码。
 
-### 1. 梯度下降学习率
+### 1. 种群和代数参数
 
 | 参数 | 命令行选项 | 默认值 | 说明 |
 |------|-----------|--------|------|
-| `learning_rate_translation` | `--lr-translation` | `0.2` | 纵向位移学习率 |
-| `learning_rate_rotation` | `--lr-rotation` | `0.05` | 旋转角度学习率（弧度） |
-| `learning_rate_vertical` | `--lr-vertical` | `0.2` | 垂直位移学习率 |
+| `population_size` | `--ga-population-size` | `50` | 种群大小（每代个体数） |
+| `max_generations` | `--ga-max-generations` | `30` | 最大代数（迭代次数） |
 
 **Docker 命令**:
 ```bash
-# 增大学习率，收敛更快
+# 增大种群和代数，搜索更全面但更慢
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --lr-translation 0.3 \
-  --lr-rotation 0.1 \
-  --lr-vertical 0.3 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
   --verbose
 ```
 
 **调优建议**:
-- 学习率太大：可能导致震荡，无法收敛
-- 学习率太小：收敛慢，需要更多迭代
-- 建议范围：
-  - `--lr-translation`: 0.1 - 0.5
-  - `--lr-rotation`: 0.01 - 0.1
-  - `--lr-vertical`: 0.1 - 0.5
+- 种群大小：
+  - `50`：默认值，平衡速度和搜索范围
+  - `100`：更全面的搜索，但计算时间翻倍
+  - `30`：快速测试
+- 最大代数：
+  - `30`：默认值，适合大多数情况
+  - `50`：更复杂的优化问题
+  - `20`：快速测试
 
 ---
 
-### 2. 数值梯度步长
+### 2. 交叉和变异参数
 
 | 参数 | 命令行选项 | 默认值 | 说明 |
 |------|-----------|--------|------|
-| `h_translation` | `--h-translation` | `0.1` mm | 纵向位移梯度计算步长 |
-| `h_rotation` | `--h-rotation` | `0.01` 弧度 | 旋转角度梯度计算步长（约 0.57°） |
-| `h_vertical` | `--h-vertical` | `0.1` mm | 垂直位移梯度计算步长 |
+| `crossover_rate` | `--ga-crossover-rate` | `0.8` | 交叉率（产生新个体的概率） |
+| `mutation_rate` | `--ga-mutation-rate` | `0.1` | 变异率（个体变异的概率） |
+| `mutation_scale` | `--ga-mutation-scale` | `0.1` | 变异幅度（变异的大小） |
+| `selection_rate` | `--ga-selection-rate` | `0.5` | 选择率（保留前N%的个体） |
 
 **Docker 命令**:
 ```bash
-# 增大步长，梯度估计更粗糙但计算更快
+# 增加变异，探索更多可能性
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --h-translation 0.2 \
-  --h-rotation 0.02 \
-  --h-vertical 0.2 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-mutation-rate 0.2 \
+  --ga-mutation-scale 0.15 \
   --verbose
 ```
 
 **调优建议**:
-- 步长太大：梯度估计不准确
-- 步长太小：梯度估计更准确但计算成本高
-- 建议范围：
-  - `--h-translation`: 0.05 - 0.5 mm
-  - `--h-rotation`: 0.005 - 0.02 弧度
-  - `--h-vertical`: 0.05 - 0.5 mm
+- 交叉率：
+  - `0.8`：默认值，平衡探索和利用
+  - `0.9`：更多交叉，更快收敛
+  - `0.6`：更保守，保持多样性
+- 变异率：
+  - `0.1`：默认值
+  - `0.2`：增加探索，避免过早收敛
+  - `0.05`：减少变异，更快收敛
+- 变异幅度：
+  - `0.1`：默认值
+  - `0.2`：更大的变异，探索更广
+  - `0.05`：更小的变异，精细调整
 
 ---
 
-### 3. 最大迭代次数
+### 3. 搜索范围参数
 
 | 参数 | 命令行选项 | 默认值 | 说明 |
 |------|-----------|--------|------|
-| `max_iterations` | `--max-iterations` | `50` | 梯度下降最大迭代次数 |
+| `translation_range` | `--ga-translation-range` | `50.0` mm | 纵向位移搜索范围（±50mm，前后方向） |
+| `rotation_range` | `--ga-rotation-range` | `180.0` 度 | 旋转角度搜索范围（±180度，绕纵向轴） |
+| `lateral_range` | `--ga-lateral-range` | `30.0` mm | 横向位移搜索范围（±30mm，上下方向，横向轴是上下方向） |
 
 **Docker 命令**:
 ```bash
-# 增加最大迭代次数
+# 扩大搜索范围
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --max-iterations 100 \
-  --verbose
-
-# 减少迭代次数（快速测试）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --max-iterations 30 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-translation-range 100.0 \
+  --ga-rotation-range 360.0 \
+  --ga-lateral-range 50.0 \
   --verbose
 ```
 
 **调优建议**:
-- 默认 `50`：适合大多数情况
-- `100`：更复杂的优化问题
-- `30`：快速测试
+- 如果匹配失败，可以尝试扩大搜索范围
+- 如果计算时间太长，可以缩小搜索范围
 
 ---
 
-### 4. 收敛阈值
+### 4. 提前终止参数
 
 | 参数 | 命令行选项 | 默认值 | 说明 |
 |------|-----------|--------|------|
-| `convergence_threshold` | `--convergence-threshold` | `0.001` | 梯度小于此值时认为收敛 |
+| `target_wrapping_ratio` | `--ga-target-wrapping-ratio` | `0.96` | 目标包裹率（达到此值即停止，0表示禁用） |
+| `num_sample_points` | `--num-sample-points` | `500` | 采样点数量（用于计算包裹率） |
 
 **Docker 命令**:
 ```bash
-# 更严格的收敛条件
+# 设置更高的目标包裹率，提前终止
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --convergence-threshold 0.0001 \
-  --verbose
-
-# 更宽松的收敛条件（更快收敛）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --convergence-threshold 0.01 \
-  --verbose
-```
-
-**调优建议**:
-- `0.001`：默认值，平衡精度和速度
-- `0.0001`：更严格，需要更多迭代
-- `0.01`：更宽松，更快收敛
-
----
-
-### 5. 采样点数量
-
-| 参数 | 命令行选项 | 默认值 | 说明 |
-|------|-----------|--------|------|
-| `num_sample_points` | `--num-sample-points` | `500` | 用于计算包裹率的采样点数量 |
-
-**Docker 命令**:
-```bash
-# 增加采样点（更高精度）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-target-wrapping-ratio 0.98 \
   --num-sample-points 1000 \
   --verbose
-
-# 减少采样点（更快）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --num-sample-points 200 \
-  --verbose
 ```
 
 **调优建议**:
-- `500`：默认值，平衡精度和速度
-- `1000`：更高精度，但计算更慢
-- `200`：更快，但精度较低
+- `target_wrapping_ratio`：
+  - `0.96`：默认值，达到96%即停止
+  - `0.98`：更严格，需要更高包裹率
+  - `0`：禁用提前终止，运行完整代数
+- `num_sample_points`：
+  - `500`：默认值，平衡精度和速度
+  - `1000`：更高精度，但计算更慢
+  - `200`：更快，但精度较低
 
 ---
 
@@ -239,12 +189,12 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 测试单个用例（默认参数）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --verbose
 
 # 测试所有用例
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases \
+  python src/biz/matcher.py /app/testcases \
   --verbose
 ```
 
@@ -253,30 +203,14 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 要求 100% 包裹
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 1.0 \
   --verbose
 
 # 要求 95% 包裹（更宽松）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 0.95 \
-  --verbose
-```
-
-### 调整穿模检测容差
-
-```bash
-# 更宽松的穿模检测（0.1mm）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.1 \
-  --verbose
-
-# 更严格的穿模检测（0.001mm）
-docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.001 \
   --verbose
 ```
 
@@ -285,31 +219,36 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 严格模式：高精度、100%包裹
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.001 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 1.0 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
+  --num-sample-points 1000 \
   --verbose
 
 # 快速模式：宽松条件、快速测试
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 0.95 \
+  --ga-population-size 30 \
+  --ga-max-generations 20 \
+  --num-sample-points 200 \
   --verbose
 ```
 
 ---
 
-## 🎯 梯度下降参数组合示例
+## 🎯 遗传算法参数组合示例
 
 ### 快速测试模式
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --max-iterations 30 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-population-size 30 \
+  --ga-max-generations 20 \
   --num-sample-points 200 \
-  --convergence-threshold 0.01 \
+  --ga-target-wrapping-ratio 0.95 \
   --verbose
 ```
 
@@ -317,27 +256,24 @@ docker-compose run --rm test-3dm-loader \
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --max-iterations 100 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
   --num-sample-points 1000 \
-  --convergence-threshold 0.0001 \
-  --lr-translation 0.1 \
-  --lr-rotation 0.02 \
-  --lr-vertical 0.1 \
+  --ga-target-wrapping-ratio 0.98 \
+  --wrapping-threshold 1.0 \
   --verbose
 ```
 
 ### 调试收敛问题
 
 ```bash
-# 如果收敛太慢，增大学习率和收敛阈值
+# 如果收敛太慢，增加种群和代数
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --lr-translation 0.3 \
-  --lr-rotation 0.1 \
-  --lr-vertical 0.3 \
-  --convergence-threshold 0.01 \
-  --max-iterations 100 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
+  --ga-mutation-rate 0.2 \
   --verbose
 ```
 
@@ -350,21 +286,21 @@ docker-compose run --rm test-3dm-loader \
 **目标**: 获得最精确的匹配结果
 
 **参数设置**:
-- `--penetration-tolerance`: `0.001` mm
 - `--wrapping-threshold`: `1.0` (100%)
 - `--num-sample-points`: `1000`（增加采样点）
-- `--convergence-threshold`: `0.0001`（更严格收敛）
-- `--max-iterations`: `100`（更多迭代）
+- `--ga-population-size`: `100`（更大种群）
+- `--ga-max-generations`: `50`（更多代数）
+- `--ga-target-wrapping-ratio`: `0.98`（更严格目标）
 
 **命令**:
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.001 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 1.0 \
-  --max-iterations 100 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
   --num-sample-points 1000 \
-  --convergence-threshold 0.0001 \
+  --ga-target-wrapping-ratio 0.98 \
   --verbose
 ```
 
@@ -375,72 +311,74 @@ docker-compose run --rm test-3dm-loader \
 **目标**: 快速验证算法是否工作
 
 **参数设置**:
-- `--penetration-tolerance`: `0.1` mm
 - `--wrapping-threshold`: `0.95` (95%)
 - `--num-sample-points`: `200`（减少采样点）
-- `--max-iterations`: `30`（减少迭代次数）
+- `--ga-population-size`: `30`（更小种群）
+- `--ga-max-generations`: `20`（更少代数）
+- `--ga-target-wrapping-ratio`: `0.95`（更宽松目标）
 
 **命令**:
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --penetration-tolerance 0.1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --wrapping-threshold 0.95 \
-  --max-iterations 30 \
+  --ga-population-size 30 \
+  --ga-max-generations 20 \
   --num-sample-points 200 \
+  --ga-target-wrapping-ratio 0.95 \
   --verbose
 ```
 
 ---
 
-### 场景3：调试梯度下降
+### 场景3：调试遗传算法
 
-**目标**: 观察梯度下降的详细过程
+**目标**: 观察遗传算法的详细过程
 
 **参数设置**:
 - 使用 `--verbose` 查看详细日志
-- `--max-iterations`: `100`（增加迭代次数）
-- `--lr-translation`: `0.1`（减小学习率，观察更平滑的收敛）
+- `--ga-max-generations`: `50`（增加代数）
+- `--ga-population-size`: `50`（默认值）
 
 **命令**:
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --max-iterations 100 \
-  --lr-translation 0.1 \
-  --verbose 2>&1 | grep -E "迭代|梯度|损失"
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --ga-max-generations 50 \
+  --verbose 2>&1 | grep -E "代|适应度|包裹率"
 ```
 
 ---
 
 ### 场景4：处理收敛问题
 
-**问题**: 梯度下降无法收敛或收敛太慢
+**问题**: 遗传算法无法找到好的解或收敛太慢
 
 **解决方案**:
-1. **减小学习率**（如果震荡）:
+1. **增加种群大小**（如果搜索范围不够）:
    ```bash
    docker-compose run --rm test-3dm-loader \
-     python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-     --lr-translation 0.1 \
-     --lr-rotation 0.02 \
-     --lr-vertical 0.1 \
+     python src/biz/matcher.py /app/testcases/testcase1 \
+     --ga-population-size 100 \
      --verbose
    ```
 
-2. **增大收敛阈值**（如果收敛太慢）:
+2. **增加变异率**（如果过早收敛）:
    ```bash
    docker-compose run --rm test-3dm-loader \
-     python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-     --convergence-threshold 0.01 \
+     python src/biz/matcher.py /app/testcases/testcase1 \
+     --ga-mutation-rate 0.2 \
+     --ga-mutation-scale 0.15 \
      --verbose
    ```
 
-3. **增加最大迭代次数**:
+3. **扩大搜索范围**（如果最优解在范围外）:
    ```bash
    docker-compose run --rm test-3dm-loader \
-     python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-     --max-iterations 100 \
+     python src/biz/matcher.py /app/testcases/testcase1 \
+     --ga-translation-range 100.0 \
+     --ga-rotation-range 360.0 \
+     --ga-lateral-range 50.0 \
      --verbose
    ```
 
@@ -452,24 +390,23 @@ docker-compose run --rm test-3dm-loader \
 
 | 参数 | 默认值 | 范围 | 说明 |
 |------|--------|------|------|
-| `--penetration-tolerance` | `0.01` mm | 0.001 - 1.0 | 穿模检测容差 |
 | `--wrapping-threshold` | `0.99` | 0.0 - 1.0 | 包裹率阈值 |
 | `--verbose` | `False` | - | 详细输出 |
 
-**注意**: `--angle-tolerance` 参数已移除。方向对齐现在通过算法自动完成，确保鞋模和粗胚的方向完全一致。
-
-### C++ 硬编码参数
+### 遗传算法参数
 
 | 参数 | 命令行选项 | 默认值 | 建议范围 | 说明 |
 |------|-----------|--------|----------|------|
-| `learning_rate_translation` | `--lr-translation` | `0.2` | 0.1 - 0.5 | 纵向位移学习率 |
-| `learning_rate_rotation` | `--lr-rotation` | `0.05` | 0.01 - 0.1 | 旋转角度学习率 |
-| `learning_rate_vertical` | `--lr-vertical` | `0.2` | 0.1 - 0.5 | 垂直位移学习率 |
-| `h_translation` | `--h-translation` | `0.1` mm | 0.05 - 0.5 | 纵向位移步长 |
-| `h_rotation` | `--h-rotation` | `0.01` 弧度 | 0.005 - 0.02 | 旋转角度步长 |
-| `h_vertical` | `--h-vertical` | `0.1` mm | 0.05 - 0.5 | 垂直位移步长 |
-| `max_iterations` | `--max-iterations` | `50` | 30 - 100 | 最大迭代次数 |
-| `convergence_threshold` | `--convergence-threshold` | `0.001` | 0.0001 - 0.01 | 收敛阈值 |
+| `population_size` | `--ga-population-size` | `50` | 30 - 100 | 种群大小 |
+| `max_generations` | `--ga-max-generations` | `30` | 20 - 50 | 最大代数 |
+| `crossover_rate` | `--ga-crossover-rate` | `0.8` | 0.6 - 0.9 | 交叉率 |
+| `mutation_rate` | `--ga-mutation-rate` | `0.1` | 0.05 - 0.2 | 变异率 |
+| `mutation_scale` | `--ga-mutation-scale` | `0.1` | 0.05 - 0.2 | 变异幅度 |
+| `selection_rate` | `--ga-selection-rate` | `0.5` | 0.3 - 0.7 | 选择率 |
+| `translation_range` | `--ga-translation-range` | `50.0` mm | 20 - 100 | 纵向位移范围（前后方向） |
+| `rotation_range` | `--ga-rotation-range` | `180.0` 度 | 90 - 360 | 旋转角度范围（绕纵向轴） |
+| `lateral_range` | `--ga-lateral-range` | `30.0` mm | 10 - 50 | 横向位移范围（上下方向，横向轴是上下方向） |
+| `target_wrapping_ratio` | `--ga-target-wrapping-ratio` | `0.96` | 0.0 - 1.0 | 目标包裹率（0=禁用） |
 | `num_sample_points` | `--num-sample-points` | `500` | 200 - 1000 | 采样点数量 |
 
 ---
@@ -480,24 +417,24 @@ docker-compose run --rm test-3dm-loader \
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
+  python src/biz/matcher.py /app/testcases/testcase1 \
   --verbose 2>&1 | tee debug.log
 ```
 
-### 2. 只查看梯度下降过程
+### 2. 只查看遗传算法过程
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --verbose 2>&1 | grep "optimizePositionAndRotation"
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --verbose 2>&1 | grep -E "代|适应度|包裹率"
 ```
 
 ### 3. 查看包裹率计算
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 \
-  --verbose 2>&1 | grep "computeWrappingRatio"
+  python src/biz/matcher.py /app/testcases/testcase1 \
+  --verbose 2>&1 | grep "包裹率"
 ```
 
 ### 4. 进入容器交互式调试
@@ -506,10 +443,10 @@ docker-compose run --rm test-3dm-loader \
 docker-compose run --rm test-3dm-loader /bin/bash
 
 # 在容器内
-python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 --verbose
+python src/biz/matcher.py /app/testcases/testcase1 --verbose
 ```
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 2.0（更新为遗传算法版本）  
 **最后更新**: 2026-02-01

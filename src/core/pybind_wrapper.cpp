@@ -20,28 +20,6 @@ PYBIND11_MODULE(mesh_matcher, m) {
                    ", valid=" + (d.is_valid ? "True" : "False") + ")";
         });
     
-    py::class_<GradientDescentParams>(m, "GradientDescentParams")
-        .def(py::init<>())
-        .def_readwrite("learning_rate_translation", &GradientDescentParams::learning_rate_translation)
-        .def_readwrite("learning_rate_rotation", &GradientDescentParams::learning_rate_rotation)
-        .def_readwrite("learning_rate_vertical", &GradientDescentParams::learning_rate_vertical)
-        .def_readwrite("h_translation", &GradientDescentParams::h_translation)
-        .def_readwrite("h_rotation", &GradientDescentParams::h_rotation)
-        .def_readwrite("h_vertical", &GradientDescentParams::h_vertical)
-        .def_readwrite("max_iterations", &GradientDescentParams::max_iterations)
-        .def_readwrite("convergence_threshold", &GradientDescentParams::convergence_threshold)
-        .def_readwrite("num_sample_points", &GradientDescentParams::num_sample_points)
-        .def_readwrite("use_adam", &GradientDescentParams::use_adam)
-        .def_readwrite("beta1", &GradientDescentParams::beta1)
-        .def_readwrite("beta2", &GradientDescentParams::beta2)
-        .def_readwrite("epsilon", &GradientDescentParams::epsilon)
-        .def("__repr__", [](const GradientDescentParams& p) {
-            return "GradientDescentParams(lr_t=" + std::to_string(p.learning_rate_translation) +
-                   ", lr_r=" + std::to_string(p.learning_rate_rotation) +
-                   ", lr_v=" + std::to_string(p.learning_rate_vertical) +
-                   ", max_iter=" + std::to_string(p.max_iterations) + ")";
-        });
-
     py::class_<GeneticAlgorithmParams>(m, "GeneticAlgorithmParams")
         .def(py::init<>())
         .def_readwrite("population_size", &GeneticAlgorithmParams::population_size)
@@ -56,7 +34,6 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("target_wrapping_ratio", &GeneticAlgorithmParams::target_wrapping_ratio)
         .def_readwrite("translation_range", &GeneticAlgorithmParams::translation_range)
         .def_readwrite("rotation_range", &GeneticAlgorithmParams::rotation_range)
-        .def_readwrite("vertical_range", &GeneticAlgorithmParams::vertical_range)
         .def_readwrite("lateral_range", &GeneticAlgorithmParams::lateral_range);
 
     py::class_<GenerationState>(m, "GenerationState")
@@ -76,9 +53,7 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("candidate_index", &MatchResult::candidate_index)
         .def_readwrite("candidate_path", &MatchResult::candidate_path)
         .def_readwrite("volume", &MatchResult::volume)
-        .def_readwrite("normal_alignment_score", &MatchResult::normal_alignment_score)
         .def_readwrite("is_fully_wrapped", &MatchResult::is_fully_wrapped)
-        .def_readwrite("has_penetration", &MatchResult::has_penetration)
         .def_readwrite("match_score", &MatchResult::match_score)
         .def_readwrite("direction_alignment", &MatchResult::direction_alignment)
         .def_readwrite("wrapping_ratio", &MatchResult::wrapping_ratio)
@@ -140,19 +115,8 @@ PYBIND11_MODULE(mesh_matcher, m) {
             return matcher.loadCandidateMesh(v_data, f_data);
         }, "Load candidate mesh (rough blank)")
         .def("match_optimized", [](MeshMatcher& matcher,
-                                   double penetration_tolerance,
                                    double wrapping_threshold,
-                                   py::object gd_params_obj,
-                                   py::object ga_params_obj,
-                                   bool use_genetic_algorithm) {
-            GradientDescentParams gd_params;
-            if (!gd_params_obj.is_none()) {
-                try {
-                    gd_params = gd_params_obj.cast<GradientDescentParams>();
-                } catch (...) {
-                }
-            }
-
+                                   py::object ga_params_obj) {
             GeneticAlgorithmParams ga_params;
             if (!ga_params_obj.is_none()) {
                 try {
@@ -162,19 +126,13 @@ PYBIND11_MODULE(mesh_matcher, m) {
             }
 
             return matcher.matchOptimized(
-                penetration_tolerance,
                 wrapping_threshold,
-                gd_params,
-                ga_params,
-                use_genetic_algorithm
+                ga_params
             );
         },
-             py::arg("penetration_tolerance") = 0.01,
              py::arg("wrapping_threshold") = 1.0,
-             py::arg("gd_params") = py::none(),
              py::arg("ga_params") = py::none(),
-             py::arg("use_genetic_algorithm") = true,
-             "Perform optimized matching with automatic direction alignment and position optimization")
+             "Perform optimized matching with automatic direction alignment and genetic algorithm optimization")
         .def_static("compute_volume", [](py::array_t<double> vertices,
                                          py::array_t<int> faces) {
             py::buffer_info vbuf = vertices.request();

@@ -235,7 +235,6 @@ def match_files():
             return jsonify({'error': '无法加载网格数据'}), 400
         
         # 执行匹配
-        penetration_tolerance = float(request.form.get('penetration_tolerance', 0.01))
         wrapping_threshold = float(request.form.get('wrapping_threshold', 0.99))
         
         # 创建 GA 参数，使用目标包裹率（默认96%）
@@ -243,10 +242,8 @@ def match_files():
         ga_params.target_wrapping_ratio = wrapping_threshold  # 使用前端传入的目标包裹率
         
         result = matcher.match_optimized(
-            penetration_tolerance=penetration_tolerance,
             wrapping_threshold=wrapping_threshold,
-            ga_params=ga_params,
-            use_genetic_algorithm=True
+            ga_params=ga_params
         )
         
         # =========================
@@ -425,7 +422,6 @@ def match_files():
                 'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
                 'optimal_lateral_offset': float(getattr(result, 'optimal_lateral_offset', 0.0)),
                 'is_fully_wrapped': result.is_fully_wrapped,
-                'has_penetration': result.has_penetration,
                 'meets_direction_constraints': result.meets_direction_constraints,
                 'optimization_algorithm': 'ga',
                 'generation_history': generation_history,

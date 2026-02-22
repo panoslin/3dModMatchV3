@@ -19,47 +19,6 @@ struct DirectionAlignment {
                           is_valid(false), heel_toe_angle_deg(0.0), vertical_angle_deg(0.0) {}
 };
 
-struct GradientDescentParams {
-    double learning_rate_translation;  // 纵向位移学习率
-    double learning_rate_rotation;     // 旋转角度学习率（弧度）
-    double learning_rate_vertical;     // 垂直位移学习率
-    double h_translation;              // 纵向位移梯度计算步长（mm）
-    double h_rotation;                 // 旋转角度梯度计算步长（弧度）
-    double h_vertical;                 // 垂直位移梯度计算步长（mm）
-    int max_iterations;                // 最大迭代次数
-    double convergence_threshold;      // 收敛阈值
-    size_t num_sample_points;          // 采样点数量
-    
-    // Adam优化器参数
-    bool use_adam;                     // 是否使用Adam优化器
-    double beta1;                      // Adam动量衰减率（默认0.9）
-    double beta2;                      // Adam二阶矩衰减率（默认0.999）
-    double epsilon;                    // Adam数值稳定性参数（默认1e-8）
-    
-    GradientDescentParams() 
-        : learning_rate_translation(0.2),
-          learning_rate_rotation(0.05),
-          learning_rate_vertical(0.2),
-          h_translation(0.1),
-          h_rotation(0.01),
-          h_vertical(0.1),
-          max_iterations(50),
-          convergence_threshold(0.001),
-          num_sample_points(500),
-          use_adam(true),              // 默认使用Adam
-          beta1(0.9),
-          beta2(0.999),
-          epsilon(1e-8) {}
-};
-
-// 优化算法类型
-enum class OptimizationAlgorithm {
-    GRADIENT_DESCENT,  // 梯度下降（当前方法）
-    GENETIC_ALGORITHM, // 遗传算法（推荐）
-    PARTICLE_SWARM,    // 粒子群优化
-    MULTI_START        // 多起点优化
-};
-
 // 遗传算法参数
 struct GeneticAlgorithmParams {
     int population_size;        // 种群大小（默认50）
@@ -76,7 +35,6 @@ struct GeneticAlgorithmParams {
     // 搜索范围
     double translation_range;    // 纵向位移搜索范围（mm，默认±50）
     double rotation_range;       // 旋转角度搜索范围（弧度，默认±π）
-    double vertical_range;       // 垂直位移搜索范围（mm，默认±20）
     double lateral_range;        // 横向位移搜索范围（mm，默认±30）
     
     GeneticAlgorithmParams()
@@ -92,7 +50,6 @@ struct GeneticAlgorithmParams {
           target_wrapping_ratio(0.96),    // 默认目标包裹率96%，达到即停止
           translation_range(50.0),
           rotation_range(3.14159265358979323846),  // M_PI
-          vertical_range(20.0),
           lateral_range(30.0) {}
 };
 
@@ -126,9 +83,7 @@ struct MatchResult {
     int candidate_index;
     std::string candidate_path;
     double volume;
-    double normal_alignment_score;
     bool is_fully_wrapped;
-    bool has_penetration;
     double match_score;
     
     // 新增字段
@@ -145,8 +100,8 @@ struct MatchResult {
     std::vector<GenerationState> generation_history;
     
     MatchResult() : candidate_index(-1), volume(0.0), 
-                   normal_alignment_score(0.0), is_fully_wrapped(false),
-                   has_penetration(true), match_score(0.0),
+                   is_fully_wrapped(false),
+                   match_score(0.0),
                    wrapping_ratio(0.0), avg_clearance(0.0), optimal_translation(0.0),
                    optimal_rotation_angle_deg(0.0), optimal_vertical_offset(0.0),
                    optimal_lateral_offset(0.0),
@@ -165,13 +120,11 @@ public:
                           const std::vector<int>& faces);
     
     // 执行优化匹配（基于生产场景）
-    // 注意：方向会自动对齐，不需要 angle_tolerance_deg 参数
-    // 默认使用遗传算法（GA）进行优化
-    MatchResult matchOptimized(double penetration_tolerance = 0.01,
-                              double wrapping_threshold = 1.0,
-                              const GradientDescentParams& gd_params = GradientDescentParams(),
-                              const GeneticAlgorithmParams& ga_params = GeneticAlgorithmParams(),
-                              bool use_genetic_algorithm = true);  // 默认使用GA
+    // 注意：方向会自动对齐
+    // 使用遗传算法（GA）进行优化
+    // 注意：penetration_tolerance 参数已废弃（包裹率100%即无穿模）
+    MatchResult matchOptimized(double wrapping_threshold = 1.0,
+                              const GeneticAlgorithmParams& ga_params = GeneticAlgorithmParams());
     
     // 计算网格体积
     static double computeVolume(const std::vector<double>& vertices,
@@ -187,13 +140,13 @@ public:
     static Eigen::Vector3d computeVerticalAxis(const std::vector<double>& vertices,
                                                const std::vector<int>& faces);
     
-    // 验证方向对齐（严格约束）- 保留用于兼容
+    // 验证方向对齐（用于记录对齐信息）
+    // 注意：方向已经通过 alignDirections 自动对齐，此函数仅用于记录对齐信息
     DirectionAlignment verifyDirectionAlignment(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
         const std::vector<double>& candidate_vertices,
-        const std::vector<int>& candidate_faces,
-        double angle_tolerance_deg = 0.1);
+        const std::vector<int>& candidate_faces);
     
     // 对齐方向（旋转鞋模使其与粗胚对齐）
     // 返回旋转矩阵，并修改target_vertices使其与candidate对齐
@@ -223,23 +176,7 @@ public:
         const std::vector<Eigen::Vector3d>* cached_face_centers = nullptr,
         const std::vector<Eigen::Vector3d>* cached_face_normals = nullptr);
     
-    // 优化位置和旋转（同时优化沿纵向轴平移、绕纵向轴旋转、垂直方向平移）
-    // 在纵向轴已对齐的前提下，优化：
-    // 1. 沿纵向轴的相对前后位移
-    // 2. 绕纵向轴的相对旋转角度（鞋模和粗胚之间的角度差）
-    // 3. 垂直于纵向轴和横向轴的上下位移
-    // 返回：最优纵向平移量，并通过引用返回最优相对旋转角度（弧度）和最优垂直位移（mm）
-    double optimizePositionAndRotation(
-        const std::vector<double>& target_vertices,
-        const std::vector<int>& target_faces,
-        const std::vector<double>& candidate_vertices,
-        const std::vector<int>& candidate_faces,
-        const Eigen::Vector3d& longitudinal_axis,
-        double& optimal_relative_rotation_angle_rad,
-        double& optimal_vertical_offset,
-        const GradientDescentParams& params = GradientDescentParams());
-    
-    // 使用遗传算法优化位置和旋转（推荐：全局搜索，避免局部最优）
+    // 使用遗传算法优化位置和旋转（全局搜索，避免局部最优）
     // 优势：
     // 1. 全局搜索，不易陷入局部最优
     // 2. 不需要计算梯度，适合非平滑目标函数
@@ -256,26 +193,7 @@ public:
         double& optimal_lateral_offset,
         const GeneticAlgorithmParams& params = GeneticAlgorithmParams());
     
-    // 使用粒子群优化（PSO）优化位置和旋转
-    // 优势：收敛速度快，适合连续优化问题
-    double optimizePositionAndRotationPSO(
-        const std::vector<double>& target_vertices,
-        const std::vector<int>& target_faces,
-        const std::vector<double>& candidate_vertices,
-        const std::vector<int>& candidate_faces,
-        const Eigen::Vector3d& longitudinal_axis,
-        const Eigen::Vector3d& vertical_axis,
-        double& optimal_relative_rotation_angle_rad,
-        double& optimal_vertical_offset,
-        int max_iterations = 30,
-        int swarm_size = 30,
-        size_t num_sample_points = 500);
-    
 private:
-    // 计算法线对齐分数
-    double computeNormalAlignment(const Eigen::Vector3d& target_normal,
-                                  const Eigen::Vector3d& candidate_normal);
-    
     // 使用KD-tree加速的距离计算
     double signedDistanceToMeshWithKDTree(const Eigen::Vector3d& point,
                                          const std::vector<double>& vertices,

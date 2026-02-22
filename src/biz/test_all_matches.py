@@ -30,11 +30,8 @@ except ImportError as e:
 def match_single_pair(
     target_file: Path,
     candidate_file: Path,
-    penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
-    gd_params=None,
-    ga_params=None,
-    use_genetic_algorithm: bool = True
+    ga_params=None
 ) -> Tuple[bool, Dict]:
     """
     匹配单个 target 和 candidate 文件对
@@ -42,11 +39,8 @@ def match_single_pair(
     Args:
         target_file: 目标文件路径
         candidate_file: 候选文件路径
-        penetration_tolerance: 穿模检测容差
         wrapping_threshold: 包裹率阈值
-        gd_params: 梯度下降参数
         ga_params: 遗传算法参数
-        use_genetic_algorithm: 是否使用遗传算法
         
     Returns:
         Tuple[bool, Dict]: (是否成功, 匹配结果信息)
@@ -70,11 +64,8 @@ def match_single_pair(
         # 执行优化匹配
         start_time = time.time()
         result = matcher.match_optimized(
-            penetration_tolerance=penetration_tolerance,
             wrapping_threshold=wrapping_threshold,
-            gd_params=gd_params if gd_params else mesh_matcher.GradientDescentParams(),
-            ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams(),
-            use_genetic_algorithm=use_genetic_algorithm
+            ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams()
         )
         match_time = time.time() - start_time
         
@@ -86,7 +77,6 @@ def match_single_pair(
             'optimal_translation': result.optimal_translation,
             'meets_direction_constraints': result.meets_direction_constraints,
             'is_fully_wrapped': result.is_fully_wrapped,
-            'has_penetration': result.has_penetration,
             'direction_alignment': {
                 'heel_toe_alignment': result.direction_alignment.heel_toe_alignment,
                 'vertical_alignment': result.direction_alignment.vertical_alignment,
@@ -97,8 +87,7 @@ def match_single_pair(
             'match_time_ms': match_time * 1000,
             'is_valid_match': (
                 result.meets_direction_constraints and
-                result.is_fully_wrapped and
-                not result.has_penetration
+                result.is_fully_wrapped
             )
         }
         
@@ -113,11 +102,8 @@ def match_single_pair(
 def test_all_matches(
     testcases_dir: Path,
     verbose: bool = False,
-    penetration_tolerance: float = 0.01,
     wrapping_threshold: float = 0.99,
-    gd_params=None,
     ga_params=None,
-    use_genetic_algorithm: bool = True,
     specific_testcase: str = None,
     show_only_valid: bool = False
 ) -> Dict:
@@ -127,11 +113,8 @@ def test_all_matches(
     Args:
         testcases_dir: 测试用例根目录
         verbose: 是否输出详细信息
-        penetration_tolerance: 穿模检测容差
         wrapping_threshold: 包裹率阈值
-        gd_params: 梯度下降参数
         ga_params: 遗传算法参数
-        use_genetic_algorithm: 是否使用遗传算法
         
     Returns:
         Dict: 所有匹配结果
@@ -196,11 +179,8 @@ def test_all_matches(
                 success, match_info = match_single_pair(
                     target_file,
                     candidate_file,
-                    penetration_tolerance=penetration_tolerance,
                     wrapping_threshold=wrapping_threshold,
-                    gd_params=gd_params,
-                    ga_params=ga_params,
-                    use_genetic_algorithm=use_genetic_algorithm
+                    ga_params=ga_params
                 )
                 
                 total_matches += 1
@@ -301,7 +281,6 @@ def generate_csv_table(results: Dict, output_file: Path):
         'avg_clearance',
         'meets_direction_constraints',
         'is_fully_wrapped',
-        'has_penetration',
         'heel_toe_angle_deg',
         'vertical_angle_deg',
         'optimal_translation',
@@ -327,7 +306,6 @@ def generate_csv_table(results: Dict, output_file: Path):
                 'avg_clearance': row.get('avg_clearance', ''),
                 'meets_direction_constraints': row.get('meets_direction_constraints', ''),
                 'is_fully_wrapped': row.get('is_fully_wrapped', ''),
-                'has_penetration': row.get('has_penetration', ''),
                 'heel_toe_angle_deg': row.get('direction_alignment', {}).get('heel_toe_angle_deg', ''),
                 'vertical_angle_deg': row.get('direction_alignment', {}).get('vertical_angle_deg', ''),
                 'optimal_translation': row.get('optimal_translation', ''),
@@ -434,7 +412,6 @@ def generate_html_table(results: Dict, output_file: Path):
                 <th>平均间隙 (mm)</th>
                 <th>方向约束</th>
                 <th>完全包裹</th>
-                <th>无穿模</th>
                 <th>鞋跟-鞋头角度 (°)</th>
                 <th>上下角度 (°)</th>
                 <th>最优平移</th>
@@ -498,7 +475,6 @@ def generate_html_table(results: Dict, output_file: Path):
                 <td>{avg_clearance}</td>
                 <td>{'是' if row.get('meets_direction_constraints') else '否'}</td>
                 <td>{'是' if row.get('is_fully_wrapped') else '否'}</td>
-                <td>{'是' if not row.get('has_penetration') else '否'}</td>
                 <td>{heel_toe_angle}</td>
                 <td>{vertical_angle}</td>
                 <td>{optimal_translation}</td>
@@ -559,13 +535,6 @@ def main():
     )
     
     parser.add_argument(
-        '--penetration-tolerance',
-        type=float,
-        default=0.01,
-        help='穿模检测容差（默认: 0.01）'
-    )
-    
-    parser.add_argument(
         '--wrapping-threshold',
         type=float,
         default=0.99,
@@ -592,7 +561,6 @@ def main():
         sys.exit(1)
     
     # 创建默认参数对象
-    gd_params = mesh_matcher.GradientDescentParams()
     ga_params = mesh_matcher.GeneticAlgorithmParams()
     
     # 运行所有匹配测试
@@ -601,11 +569,8 @@ def main():
     results = test_all_matches(
         testcases_dir,
         verbose=args.verbose,
-        penetration_tolerance=args.penetration_tolerance,
         wrapping_threshold=args.wrapping_threshold,
-        gd_params=gd_params,
         ga_params=ga_params,
-        use_genetic_algorithm=True,
         specific_testcase=args.testcase,
         show_only_valid=args.show_only_valid
     )

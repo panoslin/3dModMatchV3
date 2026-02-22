@@ -137,7 +137,7 @@ docker system prune -a
 ```bash
 # 测试单个测试用例（testcase1）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases/testcase1 \
   --verbose
 ```
@@ -147,7 +147,7 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 只测试 testcase1 中的 B004加大.3dm
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases/testcase1/target/B004加大.3dm \
   --verbose
 ```
@@ -155,18 +155,19 @@ docker-compose run --rm test-3dm-loader \
 ### 自定义参数
 
 ```bash
-# 自定义方向对齐容差（默认 0.1 度）
+# 自定义包裹率阈值（默认 0.99，即 99%）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases/testcase1 \
-  --angle-tolerance 0.05 \
+  --wrapping-threshold 0.99 \
   --verbose
 
-# 自定义包裹率阈值（默认 1.0，即 100%）
+# 调整遗传算法参数
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases/testcase1 \
-  --wrapping-threshold 1.0 \
+  --ga-population-size 100 \
+  --ga-max-generations 50 \
   --verbose
 ```
 
@@ -175,7 +176,7 @@ docker-compose run --rm test-3dm-loader \
 ```bash
 # 测试所有测试用例
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases \
   --verbose
 ```
@@ -183,17 +184,14 @@ docker-compose run --rm test-3dm-loader \
 ### 使用其他测试脚本
 
 ```bash
-# 运行完整测试套件
+# 运行所有匹配测试（生成详细报告）
 docker-compose run --rm test-3dm-loader \
-  python src/biz/test_matching.py \
+  python src/biz/test_all_matches.py \
   /app/testcases \
-  --output /app/test_report.json
-
-# 分析单个匹配
-docker-compose run --rm test-3dm-loader \
-  python src/biz/analyze_single_match.py \
-  /app/testcases/testcase1/target/B004加大.3dm \
-  /app/testcases/testcase1/candidate_set/B004加大.3dm
+  --output-csv /app/match_results/results.csv \
+  --output-html /app/match_results/results.html \
+  --output-json /app/match_results/results.json \
+  --verbose
 ```
 
 ---
@@ -311,7 +309,7 @@ testcases/
   体积: 1544742.29
   最优平移: 2.3753mm
   最优旋转角度: -2.59622度
-  最优垂直位移: -2.29mm
+  最优横向位移: -0.8mm（上下方向，横向轴是上下方向）
   匹配时间: 23773.09ms
   ✅ 满足匹配条件
 
@@ -323,13 +321,12 @@ testcases/
 | 指标 | 说明 | 合格标准 |
 |------|------|---------|
 | **方向对齐** | 鞋模和粗胚的方向一致性 | 鞋跟-鞋头: ≤0.1°, 上下: ≤0.1° |
-| **包裹率** | 鞋模被粗胚包裹的比例 | **必须 = 100%** |
+| **包裹率** | 鞋模被粗胚包裹的比例 | **必须 ≥ 99%**（默认阈值） |
 | **完全包裹** | 是否所有采样点都在粗胚内部 | **必须 = true** |
-| **无穿模** | 是否有穿透现象 | **必须 = true** (包裹率100%时自动满足) |
 | **体积** | 粗胚的体积 | 越小越好（用于最终选择） |
-| **最优平移** | 沿纵向轴的最优相对位移 | 自动优化 |
-| **最优旋转角度** | 绕纵向轴的最优相对旋转 | 自动优化 |
-| **最优垂直位移** | 垂直方向的最优位移 | 自动优化 |
+| **最优平移** | 沿纵向轴的最优相对位移（前后方向） | 自动优化（遗传算法） |
+| **最优旋转角度** | 绕纵向轴的最优相对旋转 | 自动优化（遗传算法） |
+| **最优横向位移** | 沿横向轴的最优位移（上下方向，横向轴是上下方向） | 自动优化（遗传算法） |
 
 ---
 
@@ -362,11 +359,17 @@ testcases/
 ### Q3: 测试运行很慢
 
 **原因**: 
-- 每次迭代需要计算 6 次包裹率（用于梯度计算）
+- 遗传算法需要评估多个个体（默认50个/代）
+- 每代需要运行多代（默认30代）
 - 每次包裹率计算需要检查 500 个点
 - KD-tree 构建需要时间
 
 **这是正常现象**，算法已优化（使用 KD-tree、OpenMP 并行化）
+
+**优化建议**:
+- 减少种群大小：`--ga-population-size 30`
+- 减少代数：`--ga-max-generations 20`
+- 减少采样点：`--num-sample-points 200`
 
 ### Q4: 端口被占用
 
@@ -398,7 +401,7 @@ docker-compose down
 
 ```bash
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py \
+  python src/biz/matcher.py \
   /app/testcases/testcase1 \
   --verbose 2>&1 | tee test_output.log
 ```
@@ -410,7 +413,7 @@ docker-compose run --rm test-3dm-loader \
 docker-compose run --rm test-3dm-loader /bin/bash
 
 # 在容器内执行命令
-python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 --verbose
+python src/biz/matcher.py /app/testcases/testcase1 --verbose
 ```
 
 ### 3. 检查容器状态
@@ -438,7 +441,7 @@ docker build -f Dockerfile -t 3dm-matcher:latest .
 
 # 测试单个用例
 docker-compose run --rm test-3dm-loader \
-  python src/biz/match_shoe_mold_optimized.py /app/testcases/testcase1 --verbose
+  python src/biz/matcher.py /app/testcases/testcase1 --verbose
 
 # 启动网页查看器
 docker-compose up -d web-viewer

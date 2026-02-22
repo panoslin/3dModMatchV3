@@ -136,18 +136,6 @@ Eigen::Vector3d MeshMatcher::computePrincipalNormal(const std::vector<double>& v
     return normal_sum;
 }
 
-double MeshMatcher::computeNormalAlignment(const Eigen::Vector3d& target_normal,
-                                           const Eigen::Vector3d& candidate_normal) {
-    // 计算点积，值越接近1表示对齐越好
-    double dot_product = target_normal.dot(candidate_normal);
-    // 考虑方向可能相反的情况（取绝对值）
-    dot_product = std::abs(dot_product);
-    // 转换为角度相似度（0-1范围，1表示完全对齐）
-    // 使用余弦相似度，已经是0-1范围
-    return dot_product;
-}
-
-
 void MeshMatcher::buildFaceKDTree(const std::vector<double>& vertices,
                                   const std::vector<int>& faces,
                                   KDTree& tree,
@@ -584,8 +572,7 @@ DirectionAlignment MeshMatcher::verifyDirectionAlignment(
     const std::vector<double>& target_vertices,
     const std::vector<int>& target_faces,
     const std::vector<double>& candidate_vertices,
-    const std::vector<int>& candidate_faces,
-    double angle_tolerance_deg) {
+    const std::vector<int>& candidate_faces) {
     
     DirectionAlignment alignment;
     
@@ -615,14 +602,9 @@ DirectionAlignment MeshMatcher::verifyDirectionAlignment(
         alignment.vertical_angle_deg = std::acos(std::clamp(vertical_dot, -1.0, 1.0)) * 180.0 / M_PI;
     }
     
-    // 验证是否满足严格约束（角度误差不超过容差）
-    // 鞋跟-鞋头方向：允许同向或反向（180度），容差在两端都检查
-    bool heel_toe_valid = (alignment.heel_toe_angle_deg <= angle_tolerance_deg) || 
-                         ((180.0 - alignment.heel_toe_angle_deg) <= angle_tolerance_deg);
-    // 上下方向：必须同向，不允许颠倒
-    bool vertical_valid = alignment.vertical_angle_deg <= angle_tolerance_deg;
-    
-    alignment.is_valid = heel_toe_valid && vertical_valid;
+    // 注意：方向已经通过 alignDirections 自动对齐，所以总是满足约束
+    // 这里只记录对齐信息，不进行验证
+    alignment.is_valid = true;  // 已经自动对齐，所以总是有效
     
     return alignment;
 }
@@ -922,291 +904,6 @@ static Eigen::Matrix3d computeRotationMatrixAroundAxis(const Eigen::Vector3d& ax
     return R;
 }
 
-double MeshMatcher::optimizePositionAndRotation(
-    const std::vector<double>& target_vertices,
-    const std::vector<int>& target_faces,
-    const std::vector<double>& candidate_vertices,
-    const std::vector<int>& candidate_faces,
-    const Eigen::Vector3d& longitudinal_axis,
-    double& optimal_relative_rotation_angle_rad,
-    double& optimal_vertical_offset,
-    const GradientDescentParams& params) {
-    
-    // 使用2D梯度下降同时优化平移和旋转
-    // 前提：纵向轴已经对齐（固定不动）
-    // 优化参数：
-    // 1. 沿纵向轴的相对前后位移（粗胚相对鞋模的位移）
-    // 2. 绕纵向轴的相对旋转角度（粗胚相对鞋模的旋转）
-    
-    // 计算初始位置（质心差在纵向轴上的投影）
-    Eigen::Vector3d target_center(0, 0, 0);
-    size_t target_count = target_vertices.size() / 3;
-    for (size_t i = 0; i < target_vertices.size(); i += 3) {
-        target_center += Eigen::Vector3d(target_vertices[i], 
-                                        target_vertices[i+1], 
-                                        target_vertices[i+2]);
-    }
-    target_center /= target_count;
-    
-    Eigen::Vector3d candidate_center(0, 0, 0);
-    size_t candidate_count = candidate_vertices.size() / 3;
-    for (size_t i = 0; i < candidate_vertices.size(); i += 3) {
-        candidate_center += Eigen::Vector3d(candidate_vertices[i], 
-                                            candidate_vertices[i+1], 
-                                            candidate_vertices[i+2]);
-    }
-    candidate_center /= candidate_count;
-    
-    Eigen::Vector3d center_diff = target_center - candidate_center;
-    double current_offset = center_diff.dot(longitudinal_axis);
-    double current_relative_angle = 0.0;  // 初始相对旋转角度为0
-    double current_vertical_offset = 0.0;  // 垂直位移固定为0
-    
-    // 使用传入的梯度下降参数
-    double learning_rate_translation = params.learning_rate_translation;
-    double learning_rate_rotation = params.learning_rate_rotation;
-    double h_translation = params.h_translation;
-    double h_rotation = params.h_rotation;
-    int max_iterations = params.max_iterations;
-    double convergence_threshold = params.convergence_threshold;
-    
-    // 在迭代开始前固定采样点，确保整个迭代过程中使用相同的采样点
-    // 这样可以保证损失比较有意义，梯度估计更准确
-        size_t num_vertices = target_vertices.size() / 3;
-    size_t num_to_check = std::min(params.num_sample_points, num_vertices);
-        if (num_to_check == 0) num_to_check = 1;
-        size_t step = num_vertices / num_to_check;
-        if (step == 0) step = 1;
-        
-    // 固定采样点（使用固定的起始偏移，而不是随机）
-    std::vector<Eigen::Vector3d> fixed_sample_points;
-    fixed_sample_points.reserve(num_to_check);
-    
-    // 使用固定的起始偏移（0），确保每次迭代使用相同的采样点
-    size_t fixed_start_offset = 0;
-    for (size_t i = fixed_start_offset * 3; i < target_vertices.size(); i += 3 * step) {
-        fixed_sample_points.push_back(Eigen::Vector3d(
-                target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
-        if (fixed_sample_points.size() >= num_to_check) {
-                break;
-            }
-        }
-        
-        // 如果还没收集够，从开头继续
-    if (fixed_sample_points.size() < num_to_check) {
-        for (size_t i = 0; i < target_vertices.size() && fixed_sample_points.size() < num_to_check; i += 3 * step) {
-                bool already_added = false;
-                Eigen::Vector3d candidate_point(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
-            for (const auto& existing : fixed_sample_points) {
-                    if ((existing - candidate_point).norm() < 1e-6) {
-                        already_added = true;
-                        break;
-                    }
-                }
-                if (!already_added) {
-                fixed_sample_points.push_back(candidate_point);
-            }
-        }
-    }
-    
-    std::cerr << "[LOG] optimizePositionAndRotation: 固定采样 " << fixed_sample_points.size() 
-              << " 个点用于整个迭代过程" << std::endl;
-    
-    // ========== 方案一：KD-tree缓存优化 ==========
-    // 预先构建基础KD-tree（只构建一次！），避免每次迭代重建
-    KDTree base_tree;
-    std::vector<Eigen::Vector3d> base_face_centers;
-    std::vector<Eigen::Vector3d> base_face_normals;
-    buildFaceKDTree(candidate_vertices, candidate_faces, base_tree, 
-                   base_face_centers, base_face_normals);
-    std::cerr << "[LOG] optimizePositionAndRotation: 预先构建基础KD-tree完成（" 
-              << base_face_centers.size() << " 个面）" << std::endl;
-    
-    // 辅助函数：计算给定平移和相对旋转下的损失（1 - 包裹率）
-    // 优化：使用预先构建的KD-tree，只变换面中心和法线，不重建KD-tree
-    // 在纵向轴已对齐的前提下：
-    // - offset: 沿纵向轴的相对前后位移（粗胚相对鞋模的位移）
-    // - relative_angle_rad: 绕纵向轴的相对旋转角度（粗胚相对鞋模的旋转）
-    // 注意：使用固定的采样点，确保损失比较有意义
-    auto computeLoss = [&](double offset, double relative_angle_rad) -> double {
-        // 计算粗胚的旋转矩阵（绕纵向轴旋转相对角度）
-        Eigen::Matrix3d candidate_rotation = computeRotationMatrixAroundAxis(longitudinal_axis, relative_angle_rad);
-        Eigen::Vector3d translation = longitudinal_axis * offset;
-        
-        // 变换面中心和法线（使用预先构建的基础数据）
-        std::vector<Eigen::Vector3d> transformed_face_centers(base_face_centers.size());
-        std::vector<Eigen::Vector3d> transformed_face_normals(base_face_normals.size());
-        
-        for (size_t i = 0; i < base_face_centers.size(); ++i) {
-            // 变换面中心
-            Eigen::Vector3d center = base_face_centers[i] - candidate_center;
-            center = candidate_rotation * center;
-            center += candidate_center + translation;
-            transformed_face_centers[i] = center;
-            
-            // 变换法线
-            transformed_face_normals[i] = candidate_rotation * base_face_normals[i];
-        }
-        
-        // 变换顶点（用于射线投射计算）
-        std::vector<double> transformed_candidate(candidate_vertices.size());
-        for (size_t j = 0; j < candidate_vertices.size(); j += 3) {
-            Eigen::Vector3d v(candidate_vertices[j], 
-                             candidate_vertices[j+1], 
-                             candidate_vertices[j+2]);
-            v -= candidate_center;
-            v = candidate_rotation * v;
-            v += candidate_center + translation;
-            transformed_candidate[j] = v[0];
-            transformed_candidate[j+1] = v[1];
-            transformed_candidate[j+2] = v[2];
-        }
-        
-        // 使用固定的采样点和变换后的数据计算包裹率
-        // 注意：使用基础KD-tree结构，但使用变换后的面中心
-        int inside_count = 0;
-        size_t total_checked = fixed_sample_points.size();
-        
-        #ifdef _OPENMP
-        #pragma omp parallel for reduction(+:inside_count)
-        #endif
-        for (size_t idx = 0; idx < fixed_sample_points.size(); ++idx) {
-            // 使用变换后的顶点和面中心/法线计算距离
-            double dist = signedDistanceToMeshWithKDTree(
-                fixed_sample_points[idx], transformed_candidate, candidate_faces,
-                base_tree, transformed_face_centers, transformed_face_normals);
-            
-            if (dist <= 0.1) {
-                inside_count++;
-            }
-        }
-        
-        double wrapping = (inside_count == static_cast<int>(total_checked)) ? 1.0 
-                         : (static_cast<double>(inside_count) / total_checked);
-        return 1.0 - wrapping;  // 损失 = 1 - 包裹率
-    };
-    
-    // ========== 方案三：Adam优化器 ==========
-    // 初始化Adam优化器的动量项和二阶矩估计
-    double m_translation = 0.0, v_translation = 0.0;  // 纵向位移的动量和二阶矩
-    double m_rotation = 0.0, v_rotation = 0.0;          // 旋转角度的动量和二阶矩
-    double beta1 = params.use_adam ? params.beta1 : 0.0;
-    double beta2 = params.use_adam ? params.beta2 : 0.0;
-    double epsilon = params.use_adam ? params.epsilon : 1e-8;
-    
-    std::string optimizer_name = params.use_adam ? "Adam" : "标准梯度下降";
-    std::cerr << "[LOG] optimizePositionAndRotation: 开始2D优化（纵向位移+相对旋转），优化器: " 
-              << optimizer_name << "，最大迭代次数: " << max_iterations << std::endl;
-    std::cerr << "[LOG] optimizePositionAndRotation: 前提条件：纵向轴已对齐（固定不动）" << std::endl;
-    
-    for (int iter = 0; iter < max_iterations; ++iter) {
-        auto iter_start = std::chrono::high_resolution_clock::now();
-        
-        // 计算纵向平移方向的梯度（沿纵向轴的相对位移）
-        double loss_plus_t = computeLoss(current_offset + h_translation, current_relative_angle);
-        double loss_minus_t = computeLoss(current_offset - h_translation, current_relative_angle);
-        double gradient_translation = (loss_plus_t - loss_minus_t) / (2.0 * h_translation);
-        
-        // 计算旋转方向的梯度（绕纵向轴的相对旋转）
-        double loss_plus_r = computeLoss(current_offset, current_relative_angle + h_rotation);
-        double loss_minus_r = computeLoss(current_offset, current_relative_angle - h_rotation);
-        double gradient_rotation = (loss_plus_r - loss_minus_r) / (2.0 * h_rotation);
-        
-        // 检查收敛（两个方向的梯度都很小）
-        if (std::abs(gradient_translation) < convergence_threshold && 
-            std::abs(gradient_rotation) < convergence_threshold) {
-            std::cerr << "[LOG] optimizePositionAndRotation: 收敛，纵向位移梯度: " << gradient_translation 
-                      << ", 相对旋转梯度: " << gradient_rotation << std::endl;
-            break;
-        }
-        
-        // 更新参数（使用Adam或标准梯度下降）
-        double new_offset, new_relative_angle;
-        
-        if (params.use_adam) {
-            // ========== Adam优化器更新 ==========
-            int t = iter + 1;  // 迭代次数（从1开始）
-            
-            // 更新动量项（一阶矩估计）
-            m_translation = beta1 * m_translation + (1.0 - beta1) * gradient_translation;
-            m_rotation = beta1 * m_rotation + (1.0 - beta1) * gradient_rotation;
-            
-            // 更新二阶矩估计
-            v_translation = beta2 * v_translation + (1.0 - beta2) * gradient_translation * gradient_translation;
-            v_rotation = beta2 * v_rotation + (1.0 - beta2) * gradient_rotation * gradient_rotation;
-            
-            // 偏差修正
-            double m_hat_translation = m_translation / (1.0 - std::pow(beta1, t));
-            double m_hat_rotation = m_rotation / (1.0 - std::pow(beta1, t));
-            double v_hat_translation = v_translation / (1.0 - std::pow(beta2, t));
-            double v_hat_rotation = v_rotation / (1.0 - std::pow(beta2, t));
-            
-            // 自适应学习率更新
-            double adaptive_lr_translation = learning_rate_translation / (std::sqrt(v_hat_translation) + epsilon);
-            double adaptive_lr_rotation = learning_rate_rotation / (std::sqrt(v_hat_rotation) + epsilon);
-            
-            new_offset = current_offset - adaptive_lr_translation * m_hat_translation;
-            new_relative_angle = current_relative_angle - adaptive_lr_rotation * m_hat_rotation;
-        } else {
-            // ========== 标准梯度下降更新 ==========
-            new_offset = current_offset - learning_rate_translation * gradient_translation;
-            new_relative_angle = current_relative_angle - learning_rate_rotation * gradient_rotation;
-        }
-        
-        // 限制相对旋转角度范围（±180度）
-        if (new_relative_angle > M_PI) new_relative_angle -= 2 * M_PI;
-        if (new_relative_angle < -M_PI) new_relative_angle += 2 * M_PI;
-        
-        // 检查新位置的损失是否更小
-        double new_loss = computeLoss(new_offset, new_relative_angle);
-        double current_loss = computeLoss(current_offset, current_relative_angle);
-        
-        bool accepted = false;
-        if (new_loss < current_loss) {
-            current_offset = new_offset;
-            current_relative_angle = new_relative_angle;
-            accepted = true;
-        } else {
-            // 如果损失没有改善，减小学习率（仅对标准梯度下降）
-            if (!params.use_adam) {
-            learning_rate_translation *= 0.5;
-            learning_rate_rotation *= 0.5;
-            if (learning_rate_translation < 0.01 || learning_rate_rotation < 0.001) {
-                std::cerr << "[LOG] optimizePositionAndRotation: 学习率太小，退出" << std::endl;
-                break;
-                }
-            }
-        }
-        
-        // 如果已经达到100%包裹率（损失为0），提前退出
-        if (new_loss < 1e-6) {
-            current_offset = new_offset;
-            current_relative_angle = new_relative_angle;
-            std::cerr << "[LOG] optimizePositionAndRotation: 达到100%包裹率，提前退出" << std::endl;
-            break;
-        }
-        
-        auto iter_end = std::chrono::high_resolution_clock::now();
-        auto iter_time = std::chrono::duration_cast<std::chrono::milliseconds>(iter_end - iter_start).count();
-        std::cerr << "[LOG] optimizePositionAndRotation: 迭代 " << (iter + 1) << " 耗时: " 
-                  << iter_time << "ms, 当前损失: " << current_loss 
-                  << ", 新损失: " << new_loss 
-                  << (accepted ? " ✅接受" : " ❌拒绝")
-                  << ", 纵向位移梯度: " << gradient_translation 
-                  << ", 相对旋转梯度: " << gradient_rotation;
-        if (params.use_adam) {
-            std::cerr << ", Adam动量: m_t=" << m_translation << ", m_r=" << m_rotation;
-        }
-        std::cerr << std::endl;
-    }
-    
-    optimal_relative_rotation_angle_rad = current_relative_angle;
-    optimal_vertical_offset = 0.0;  // 垂直位移固定为0
-    std::cerr << "[LOG] optimizePositionAndRotation: 完成，最优纵向位移: " << current_offset 
-              << "mm, 最优相对旋转角度: " << (current_relative_angle * 180.0 / M_PI) << "度" << std::endl;
-    return current_offset;
-}
-
 // ========== 遗传算法实现 ==========
 // 个体结构（表示一个候选解）
 struct Individual {
@@ -1471,9 +1168,9 @@ double MeshMatcher::optimizePositionAndRotationGA(
         }
         
         optimal_relative_rotation_angle_rad = best_individual.rotation;
-        optimal_vertical_offset = best_individual.translation;
+        optimal_vertical_offset = 0.0;  // 垂直位移固定为0（不再优化）
         optimal_lateral_offset = best_individual.lateral;
-        return best_fitness;
+        return best_individual.translation;  // 返回纵向位移
     }
 
     // ========= 回放：保存 generation 0（初始种群评估完成）=========
@@ -1745,11 +1442,9 @@ double MeshMatcher::optimizePositionAndRotationGA(
     return best_individual.translation;
 }
 
-MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
-                                       double wrapping_threshold,
-                                       const GradientDescentParams& gd_params,
-                                       const GeneticAlgorithmParams& ga_params,
-                                       bool use_genetic_algorithm) {
+MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
+                                       const GeneticAlgorithmParams& ga_params) {
+    // 注意：penetration_tolerance 参数已移除，包裹率100%即无穿模
     auto start_total = std::chrono::high_resolution_clock::now();
     MatchResult result;
     
@@ -1783,8 +1478,7 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     std::cerr << "[LOG] Step 2: 开始验证方向对齐..." << std::endl;
     result.direction_alignment = verifyDirectionAlignment(
         aligned_target, target_faces_,
-        candidate_vertices_, candidate_faces_,
-        0.0  // 容差不再使用，因为已经自动对齐
+        candidate_vertices_, candidate_faces_
     );
     result.meets_direction_constraints = true;  // 已经对齐，所以总是满足
     t1 = std::chrono::high_resolution_clock::now();
@@ -1804,47 +1498,33 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     std::cerr << "[LOG]   垂直轴: (" << vertical_axis[0] << ", " 
               << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl;
     
-    // 4. 优化位置和旋转（默认使用遗传算法）
+    // 4. 优化位置和旋转（使用遗传算法）
     t0 = std::chrono::high_resolution_clock::now();
     double optimal_relative_rotation_angle_rad = 0.0;
     double optimal_vertical_offset = 0.0;
     double optimal_lateral_offset = 0.0;  // 横向位移
     
-    if (use_genetic_algorithm) {
-        std::cerr << "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl;
-        result.optimal_translation = optimizePositionAndRotationGA(
-            aligned_target, target_faces_,
-            candidate_vertices_, candidate_faces_,
-            longitudinal_axis,
-            vertical_axis,
-            optimal_relative_rotation_angle_rad,
-            optimal_vertical_offset,
-            optimal_lateral_offset,
-            ga_params
-        );
-        // 回放：复制 GA 每代历史到结果里（供前端回放）
-        result.generation_history = g_last_ga_generation_history;
-    } else {
-        std::cerr << "\n[LOG] Step 4: 使用梯度下降优化（纵向位移+相对旋转）..." << std::endl;
-    result.optimal_translation = optimizePositionAndRotation(
+    std::cerr << "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl;
+    result.optimal_translation = optimizePositionAndRotationGA(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_,
         longitudinal_axis,
+        vertical_axis,
         optimal_relative_rotation_angle_rad,
         optimal_vertical_offset,
-        gd_params
+        optimal_lateral_offset,
+        ga_params
     );
-    }
+    // 回放：复制 GA 每代历史到结果里（供前端回放）
+    result.generation_history = g_last_ga_generation_history;
+    
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_optimize = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 4: 优化完成，耗时: " << dt_optimize << "ms" << std::endl;
     std::cerr << "[LOG]   最优参数: 纵向位移=" << std::fixed << std::setprecision(2) 
               << result.optimal_translation << "mm, 旋转角度=" 
-              << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°";
-    if (use_genetic_algorithm) {
-        std::cerr << ", 横向位移=" << optimal_lateral_offset << "mm";
-    }
-    std::cerr << std::endl;
+              << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°, 横向位移=" 
+              << optimal_lateral_offset << "mm" << std::endl;
     
     // 5. 应用最优相对平移和相对旋转
     t0 = std::chrono::high_resolution_clock::now();
@@ -1945,10 +1625,9 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
         return result;  // 未达到目标包裹率，不满足条件
     }
     
-    // 7. 计算体积和匹配分数（包裹率100%即无穿模）
+    // 7. 计算体积和匹配分数
     t0 = std::chrono::high_resolution_clock::now();
     std::cerr << "\n[LOG] Step 7: 计算最终体积和匹配分数..." << std::endl;
-    result.has_penetration = false;  // 包裹率100%意味着无穿模
     
     result.volume = computeVolume(optimized_candidate, candidate_faces_);
     
@@ -1975,9 +1654,7 @@ MatchResult MeshMatcher::matchOptimized(double penetration_tolerance,
     std::cerr << "[LOG] 最优参数:" << std::endl;
     std::cerr << "[LOG]   纵向位移: " << std::setprecision(2) << result.optimal_translation << " mm" << std::endl;
     std::cerr << "[LOG]   旋转角度: " << result.optimal_rotation_angle_deg << " °" << std::endl;
-    if (use_genetic_algorithm) {
-        std::cerr << "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl;
-    }
+    std::cerr << "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl;
     std::cerr << "[LOG] ========== 性能分析 ==========" << std::endl;
     std::cerr << "[LOG] 各步骤耗时及占比:" << std::endl;
     if (total_time > 0) {
