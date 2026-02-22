@@ -1321,52 +1321,52 @@ double MeshMatcher::optimizePositionAndRotationGA(
         if (fixed_sample_points.size() >= num_to_check) break;
     }
     
-    // 预先构建基础KD-tree
+    // 预先构建基础KD-tree（保留用于兼容）
     KDTree base_tree;
     std::vector<Eigen::Vector3d> base_face_centers;
     std::vector<Eigen::Vector3d> base_face_normals;
     buildFaceKDTree(candidate_vertices, candidate_faces, base_tree, 
                    base_face_centers, base_face_normals);
     
-    // 适应度函数：计算包裹率（纵向位移+旋转+横向位移）
+    // ========== BVH 优化：构建 BVH 树（只构建一次）==========
+    auto bvh_build_start = std::chrono::high_resolution_clock::now();
+    BVHTree candidate_bvh;
+    candidate_bvh.build(candidate_vertices, candidate_faces);
+    auto bvh_build_end = std::chrono::high_resolution_clock::now();
+    auto bvh_build_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+        bvh_build_end - bvh_build_start).count();
+    std::cerr << "[GA] BVH 构建完成，耗时: " << bvh_build_time << "ms" << std::endl;
+    
+    // 适应度函数：计算包裹率（使用 BVH 加速）
     auto computeFitness = [&](const Individual& ind) -> double {
         Eigen::Matrix3d rotation = computeRotationMatrixAroundAxis(longitudinal_axis, ind.rotation);
         Eigen::Vector3d translation = longitudinal_axis * ind.translation 
                                      + lateral_axis * ind.lateral;  // 纵向+横向位移
         
-        // 变换面中心和法线
-        std::vector<Eigen::Vector3d> transformed_face_centers(base_face_centers.size());
-        std::vector<Eigen::Vector3d> transformed_face_normals(base_face_normals.size());
-        for (size_t i = 0; i < base_face_centers.size(); ++i) {
-            Eigen::Vector3d center = base_face_centers[i] - candidate_center;
-            center = rotation * center;
-            center += candidate_center + translation;
-            transformed_face_centers[i] = center;
-            transformed_face_normals[i] = rotation * base_face_normals[i];
-        }
-        
-        // 变换顶点
-        std::vector<double> transformed_vertices(candidate_vertices.size());
-        for (size_t j = 0; j < candidate_vertices.size(); j += 3) {
-            Eigen::Vector3d v(candidate_vertices[j], candidate_vertices[j+1], candidate_vertices[j+2]);
-            v -= candidate_center;
-            v = rotation * v;
-            v += candidate_center + translation;
-            transformed_vertices[j] = v[0];
-            transformed_vertices[j+1] = v[1];
-            transformed_vertices[j+2] = v[2];
-        }
-        
-        // 计算包裹率
+        // 计算包裹率（使用 BVH：变换采样点而不是变换整个网格）
+        // 原理：候选网格变换为 v' = R * (v - center) + center + T
+        //       逆变换采样点：sample' = R^(-1) * (sample - center - T) + center
         int inside_count = 0;
         #ifdef _OPENMP
         #pragma omp parallel for reduction(+:inside_count)
         #endif
         for (size_t idx = 0; idx < fixed_sample_points.size(); ++idx) {
-            double dist = signedDistanceToMeshWithKDTree(
-                fixed_sample_points[idx], transformed_vertices, candidate_faces,
-                base_tree, transformed_face_centers, transformed_face_normals);
-            if (dist <= 0.1) inside_count++;
+            Eigen::Vector3d sample = fixed_sample_points[idx];
+            
+            // 逆变换：将采样点从"变换后的候选网格坐标系"变换回"原始候选网格坐标系"
+            // 步骤：1. 减去平移 T
+            //       2. 减去中心点
+            //       3. 逆旋转
+            //       4. 加回中心点
+            sample -= translation;  // sample - T
+            sample -= candidate_center;  // sample - T - center
+            sample = rotation.inverse() * sample;  // R^(-1) * (sample - T - center)
+            sample += candidate_center;  // R^(-1) * (sample - T - center) + center
+            
+            // 使用 BVH 快速判断内外（O(log F) 而不是 O(F)）
+            if (candidate_bvh.isPointInside(sample)) {
+                inside_count++;
+            }
         }
         
         return static_cast<double>(inside_count) / fixed_sample_points.size();

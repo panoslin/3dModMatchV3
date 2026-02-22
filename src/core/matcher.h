@@ -6,6 +6,7 @@
 #include <memory>
 #include <Eigen/Dense>
 #include "kdtree.h"
+#include "bvh.h"
 
 struct DirectionAlignment {
     double heel_toe_alignment;      // 鞋跟-鞋头方向对齐分数 [0, 1]

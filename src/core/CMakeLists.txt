@@ -49,8 +49,10 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 # Source files
 set(SOURCES
     matcher.cpp
+    bvh.cpp
     pybind_wrapper.cpp
     kdtree.h
+    bvh.h
 )
 
 # Create Python module
