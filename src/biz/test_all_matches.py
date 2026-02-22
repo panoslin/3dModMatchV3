@@ -73,7 +73,7 @@ def match_single_pair(
         match_info = {
             'volume': result.volume,
             'wrapping_ratio': result.wrapping_ratio,
-            'avg_clearance': result.avg_clearance,  # 平均间隙值
+            'percentile96_clearance': result.percentile96_clearance,  # 96%分位数间隙值
             'optimal_translation': result.optimal_translation,
             'meets_direction_constraints': result.meets_direction_constraints,
             'is_fully_wrapped': result.is_fully_wrapped,
@@ -195,7 +195,7 @@ def test_all_matches(
                     if verbose:
                         print(f"{status} 体积={match_info.get('volume', 0):.2f}, "
                               f"包裹率={match_info.get('wrapping_ratio', 0)*100:.1f}%, "
-                              f"间隙={match_info.get('avg_clearance', 0):.4f}mm, "
+                              f"间隙={match_info.get('percentile96_clearance', 0):.4f}mm, "
                               f"时间={match_info.get('match_time_ms', 0):.1f}ms")
                 else:
                     status = "⚠️"
@@ -278,7 +278,7 @@ def generate_csv_table(results: Dict, output_file: Path):
         'is_valid_match',
         'volume',
         'wrapping_ratio',
-        'avg_clearance',
+        'percentile96_clearance',
         'meets_direction_constraints',
         'is_fully_wrapped',
         'heel_toe_angle_deg',
@@ -303,7 +303,7 @@ def generate_csv_table(results: Dict, output_file: Path):
                 'is_valid_match': row.get('is_valid_match', False),
                 'volume': row.get('volume', ''),
                 'wrapping_ratio': row.get('wrapping_ratio', ''),
-                'avg_clearance': row.get('avg_clearance', ''),
+                'percentile96_clearance': row.get('percentile96_clearance', ''),
                 'meets_direction_constraints': row.get('meets_direction_constraints', ''),
                 'is_fully_wrapped': row.get('is_fully_wrapped', ''),
                 'heel_toe_angle_deg': row.get('direction_alignment', {}).get('heel_toe_angle_deg', ''),
@@ -409,7 +409,7 @@ def generate_html_table(results: Dict, output_file: Path):
                 <th>有效匹配</th>
                 <th>体积</th>
                 <th>包裹率 (%)</th>
-                <th>平均间隙 (mm)</th>
+                <th>96%分位数间隙 (mm)</th>
                 <th>方向约束</th>
                 <th>完全包裹</th>
                 <th>鞋跟-鞋头角度 (°)</th>
@@ -445,9 +445,9 @@ def generate_html_table(results: Dict, output_file: Path):
         if wrapping_ratio:
             wrapping_ratio = f'{wrapping_ratio * 100:.2f}'
         
-        avg_clearance = row.get('avg_clearance', '')
-        if avg_clearance:
-            avg_clearance = f'{avg_clearance:.4f}'
+        percentile96_clearance = row.get('percentile96_clearance', '')
+        if percentile96_clearance:
+            percentile96_clearance = f'{percentile96_clearance:.4f}'
         
         heel_toe_angle = row.get('direction_alignment', {}).get('heel_toe_angle_deg', '')
         if heel_toe_angle:
@@ -472,7 +472,7 @@ def generate_html_table(results: Dict, output_file: Path):
                 <td class="{status_class}">{'是' if is_valid else '否'}</td>
                 <td>{volume}</td>
                 <td>{wrapping_ratio}</td>
-                <td>{avg_clearance}</td>
+                <td>{percentile96_clearance}</td>
                 <td>{'是' if row.get('meets_direction_constraints') else '否'}</td>
                 <td>{'是' if row.get('is_fully_wrapped') else '否'}</td>
                 <td>{heel_toe_angle}</td>

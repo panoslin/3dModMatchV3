@@ -867,24 +867,28 @@ double MeshMatcher::computeAverageClearance(
         }
     }
     
-    // 计算平均间隙
+    // 计算96%分位数间隙
     if (clearances.empty()) {
         return 0.0;  // 没有内部点，间隙为0
     }
     
-    double sum_clearance = 0.0;
-    for (double c : clearances) {
-        sum_clearance += c;
+    // 对间隙值进行排序
+    std::sort(clearances.begin(), clearances.end());
+    
+    // 计算96%分位数的索引
+    size_t percentile_index = static_cast<size_t>(std::ceil(clearances.size() * 0.96) - 1);
+    if (percentile_index >= clearances.size()) {
+        percentile_index = clearances.size() - 1;
     }
-    double avg_clearance = sum_clearance / clearances.size();
+    double percentile96_clearance = clearances[percentile_index];
     
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms" << std::endl;
     std::cerr << "[LOG]   内部点数: " << clearances.size() << "/" << points_to_check.size() << std::endl;
-    std::cerr << "[LOG]   平均间隙: " << std::fixed << std::setprecision(4) << avg_clearance << " mm" << std::endl;
+    std::cerr << "[LOG]   96%分位数间隙: " << std::fixed << std::setprecision(4) << percentile96_clearance << " mm" << std::endl;
     
-    return avg_clearance;
+    return percentile96_clearance;
 }
 
 
@@ -1575,9 +1579,9 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     auto dt_translate = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     std::cerr << "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl;
     
-    // 6. 计算体积包裹率和平均间隙
+    // 6. 计算体积包裹率和96%分位数间隙
     t0 = std::chrono::high_resolution_clock::now();
-    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率和平均间隙..." << std::endl;
+    std::cerr << "\n[LOG] Step 6: 开始计算最终包裹率和96%分位数间隙..." << std::endl;
     
     // 构建KD-tree（用于包裹率和间隙计算）
     KDTree clearance_tree;
@@ -1593,8 +1597,8 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
         &clearance_tree, &clearance_face_centers, &clearance_face_normals
     );
     
-    // 计算平均间隙（使用缓存的KD-tree）
-    result.avg_clearance = computeAverageClearance(
+    // 计算96%分位数间隙（使用缓存的KD-tree）
+    result.percentile96_clearance = computeAverageClearance(
         aligned_target, target_faces_,
         optimized_candidate, candidate_faces_,
         &clearance_tree, &clearance_face_centers, &clearance_face_normals
@@ -1602,10 +1606,10 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_wrapping = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::cerr << "[LOG] Step 6: 包裹率和平均间隙计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
+    std::cerr << "[LOG] Step 6: 包裹率和96%分位数间隙计算完成，耗时: " << dt_wrapping << "ms" << std::endl;
     std::cerr << "[LOG]   包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
               << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl;
-    std::cerr << "[LOG]   平均间隙: " << std::setprecision(4) << result.avg_clearance << " mm" << std::endl;
+    std::cerr << "[LOG]   96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl;
     
     // 确定目标包裹率：优先使用 GA 参数中的目标包裹率，否则使用 wrapping_threshold
     double target_wrapping = (ga_params.target_wrapping_ratio > 0.0) 
@@ -1648,7 +1652,7 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     std::cerr << "[LOG] ========== 匹配结果摘要 ==========" << std::endl;
     std::cerr << "[LOG] 包裹率: " << std::fixed << std::setprecision(4) << result.wrapping_ratio 
               << " (" << (result.wrapping_ratio * 100) << "%) ✅" << std::endl;
-    std::cerr << "[LOG] 平均间隙: " << std::setprecision(4) << result.avg_clearance << " mm" << std::endl;
+    std::cerr << "[LOG] 96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl;
     std::cerr << "[LOG] 体积: " << std::setprecision(2) << result.volume << " mm³" << std::endl;
     std::cerr << "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl;
     std::cerr << "[LOG] 最优参数:" << std::endl;
