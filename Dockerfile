@@ -37,6 +37,7 @@ COPY src/biz/load_3dm.py /app/src/biz/
 COPY src/biz/test_3dm_files.py /app/src/biz/
 COPY src/biz/match_shoe_mold_optimized.py /app/src/biz/
 COPY src/biz/test_matching.py /app/src/biz/
+COPY src/biz/test_all_matches.py /app/src/biz/
 COPY src/biz/analyze_single_match.py /app/src/biz/
 COPY src/core/ /app/src/core/
 # 复制网页查看器
