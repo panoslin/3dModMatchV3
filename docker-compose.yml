@@ -39,7 +39,11 @@ services:
       - ./match_results:/app/match_results
     # 运行测试脚本（可以在运行时覆盖）
     # 例如运行所有匹配测试: docker-compose run --rm test-3dm-loader python src/biz/test_all_matches.py /app/testcases --output-csv /app/match_results/results.csv --output-html /app/match_results/results.html --verbose
-    command: ["sh", "-c", "mkdir -p /app/match_results && python src/biz/test_all_matches.py /app/testcases --output-csv /app/match_results/results.csv --output-html /app/match_results/results.html --output-json /app/match_results/results.json --verbose"]
+    command: ["sh", "-c", "mkdir -p /app/match_results && \
+      python src/biz/test_all_matches.py /app/testcases --testcase testcase1 --output-csv /app/match_results/results_testcase1.csv --output-html /app/match_results/results_testcase1.html --output-json /app/match_results/results_testcase1.json --verbose && \
+      python src/biz/test_all_matches.py /app/testcases --testcase testcase2 --output-csv /app/match_results/results_testcase2.csv --output-html /app/match_results/results_testcase2.html --output-json /app/match_results/results_testcase2.json --verbose && \
+      python src/biz/test_all_matches.py /app/testcases --testcase testcase3 --output-csv /app/match_results/results_testcase3.csv --output-html /app/match_results/results_testcase3.html --output-json /app/match_results/results_testcase3.json --verbose && \
+      python src/biz/test_all_matches.py /app/testcases --testcase testcase4 --output-csv /app/match_results/results_testcase4.csv --output-html /app/match_results/results_testcase4.html --output-json /app/match_results/results_testcase4.json --verbose"]
     # 确保容器在测试完成后退出
     restart: "no"
     environment:
