@@ -1,4 +1,5 @@
 #include "matcher.h"
+#define _USE_MATH_DEFINES
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -634,18 +635,18 @@ double MeshMatcher::computeWrappingRatio(
     }
     
     // 固定采样500个点
-    size_t num_to_check = std::min(500UL, num_vertices);
+    size_t num_to_check = std::min(static_cast<size_t>(500), num_vertices);
     if (num_to_check == 0) {
         num_to_check = 1;  // 至少检查1个点
     }
-    
+
     // 计算步长，确保均匀分布检查500个顶点
     size_t step = num_vertices / num_to_check;
     if (step == 0) step = 1;
-    
-    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 检查 " << num_to_check << "/" << num_vertices 
+
+    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 检查 " << num_to_check << "/" << num_vertices
               << " 个顶点 (步长: " << step << ")..." << std::endl);
-    
+
     // 构建或使用缓存的KD-tree（用于加速距离查询）
     const KDTree* face_centers_tree;
     const std::vector<Eigen::Vector3d>* face_centers;
@@ -713,20 +714,20 @@ double MeshMatcher::computeWrappingRatio(
     // 并行计算距离
     auto t_distance_start = std::chrono::high_resolution_clock::now();
     std::vector<int> inside_flags(points_to_check.size(), 0);
-    size_t check_interval = std::max(1UL, points_to_check.size() / 10);  // 每10%输出一次进度
+    size_t check_interval = std::max(static_cast<size_t>(1), points_to_check.size() / 10);  // 每10%输出一次进度
     
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
-    for (size_t idx = 0; idx < points_to_check.size(); ++idx) {
+    for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
         double dist = signedDistanceToMeshWithKDTree(
             points_to_check[idx], candidate_vertices, candidate_faces,
             *face_centers_tree, *face_centers, *face_normals);
-        
+
         if (dist <= 0.1) {  // 容差，避免精度问题
             inside_flags[idx] = 1;
         }
-        
+
         // 进度输出（线程安全）
         if (idx % check_interval == 0) {
             #ifdef _OPENMP
@@ -792,11 +793,11 @@ double MeshMatcher::computeAverageClearance(
     }
     
     // 固定采样500个点
-    size_t num_to_check = std::min(500UL, num_vertices);
+    size_t num_to_check = std::min(static_cast<size_t>(500), num_vertices);
     if (num_to_check == 0) {
         num_to_check = 1;
     }
-    
+
     size_t step = num_vertices / num_to_check;
     if (step == 0) step = 1;
     
@@ -857,11 +858,11 @@ double MeshMatcher::computeAverageClearance(
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
-    for (size_t idx = 0; idx < points_to_check.size(); ++idx) {
+    for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
         double dist = signedDistanceToMeshWithKDTree(
             points_to_check[idx], candidate_vertices, candidate_faces,
             *face_centers_tree, *face_centers, *face_normals);
-        
+
         // 只统计在内部的点（距离 <= 0.1），间隙 = |距离|
         if (dist <= 0.1) {
             double clearance = std::abs(dist);
@@ -1058,7 +1059,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
         #ifdef _OPENMP
         #pragma omp parallel for reduction(+:inside_count)
         #endif
-        for (size_t idx = 0; idx < fixed_sample_points.size(); ++idx) {
+        for (int idx = 0; idx < static_cast<int>(fixed_sample_points.size()); ++idx) {
             Eigen::Vector3d sample = fixed_sample_points[idx];
             
             // 逆变换：将采样点从"变换后的候选网格坐标系"变换回"原始候选网格坐标系"
@@ -1106,7 +1107,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
-    for (size_t i = 0; i < population.size(); ++i) {
+    for (int i = 0; i < static_cast<int>(population.size()); ++i) {
         population[i].fitness = computeFitness(population[i]);
     }
     auto t_fitness_end = std::chrono::high_resolution_clock::now();
@@ -1287,7 +1288,7 @@ double MeshMatcher::optimizePositionAndRotationGA(
         #ifdef _OPENMP
         #pragma omp parallel for
         #endif
-        for (size_t i = 0; i < new_individuals.size(); ++i) {
+        for (int i = 0; i < static_cast<int>(new_individuals.size()); ++i) {
             auto t_fit_start = std::chrono::high_resolution_clock::now();
             new_individuals[i].fitness = computeFitness(new_individuals[i]);
             auto t_fit_end = std::chrono::high_resolution_clock::now();
