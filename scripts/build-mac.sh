@@ -101,28 +101,49 @@ rm -rf "$VENV_DIR"
 
 VENV_PY="$VENV_DIR/bin/python3"
 
-# ── 4.1 Fix Python dylib for portability ─────────────────────────────────
-# venv python3 links to the build machine's Python framework (e.g.
-# /Library/Frameworks/Python.framework/Versions/3.11/Python).
-# Copy that dylib into the venv and rewrite the reference so the app
-# works on machines without that exact Python installation.
-info "Fixing Python dylib references for portability..."
+# ── 4.1 Fix Python for portability ───────────────────────────────────────
+# macOS framework Python's venv bin/python3 is a stub launcher that execs
+# into Python.app inside the framework — it fails outside the framework.
+# Fix: replace the stub with the real interpreter binary, bundle the Python
+# dylib, and rewrite the dylib reference to a relative path.
+info "Fixing Python for portability..."
 
-PYTHON_DYLIB=$(otool -L "$VENV_PY" | grep -oE '/[^ ]*Python\.framework/[^ ]+' | head -1)
-if [[ -z "$PYTHON_DYLIB" ]]; then
-    PYTHON_DYLIB=$(otool -L "$VENV_PY" | grep -oE '/[^ ]*libpython[^ ]+' | head -1)
+# Find the framework dylib (e.g. /Library/Frameworks/Python.framework/Versions/3.11/Python)
+PYTHON_DYLIB=$(otool -L "$VENV_PY" | grep -oE '/[^ ]*Python\.framework/Versions/[^ ]*Python' | head -1)
+FRAMEWORK_VER_DIR=""
+REAL_PYTHON_BIN=""
+
+if [[ -n "$PYTHON_DYLIB" ]]; then
+    FRAMEWORK_VER_DIR=$(dirname "$PYTHON_DYLIB")
+    REAL_PYTHON_BIN="$FRAMEWORK_VER_DIR/Resources/Python.app/Contents/MacOS/Python"
 fi
 
-if [[ -n "$PYTHON_DYLIB" ]] && [[ -f "$PYTHON_DYLIB" ]]; then
+if [[ -n "$REAL_PYTHON_BIN" ]] && [[ -f "$REAL_PYTHON_BIN" ]]; then
+    # Replace the stub launcher with the real Python interpreter binary
+    cp "$REAL_PYTHON_BIN" "$VENV_PY"
+    info "Replaced stub with real Python binary from Python.app"
+
+    # Bundle the Python dylib
     DYLIB_NAME=$(basename "$PYTHON_DYLIB")
     mkdir -p "$VENV_DIR/lib"
     cp "$PYTHON_DYLIB" "$VENV_DIR/lib/$DYLIB_NAME"
-    # Ad-hoc sign the copied dylib first (macOS rejects unsigned/invalid-signed dylibs)
-    codesign --force --sign - "$VENV_DIR/lib/$DYLIB_NAME"
+
+    # Rewrite dylib reference to relative path
     install_name_tool -change "$PYTHON_DYLIB" "@executable_path/../lib/$DYLIB_NAME" "$VENV_PY"
-    # Ad-hoc re-sign the binary (required on Apple Silicon after modifying it)
+
+    # Ad-hoc sign both (required on Apple Silicon)
+    codesign --force --sign - "$VENV_DIR/lib/$DYLIB_NAME"
     codesign --force --sign - "$VENV_PY"
     info "Bundled $DYLIB_NAME and updated dylib reference"
+elif [[ -n "$PYTHON_DYLIB" ]] && [[ -f "$PYTHON_DYLIB" ]]; then
+    # Non-framework fallback: just bundle the dylib and fix reference
+    DYLIB_NAME=$(basename "$PYTHON_DYLIB")
+    mkdir -p "$VENV_DIR/lib"
+    cp "$PYTHON_DYLIB" "$VENV_DIR/lib/$DYLIB_NAME"
+    install_name_tool -change "$PYTHON_DYLIB" "@executable_path/../lib/$DYLIB_NAME" "$VENV_PY"
+    codesign --force --sign - "$VENV_DIR/lib/$DYLIB_NAME"
+    codesign --force --sign - "$VENV_PY"
+    info "Bundled $DYLIB_NAME and updated dylib reference (non-framework)"
 else
     warn "Could not find Python dylib to bundle — app may not be portable"
 fi
