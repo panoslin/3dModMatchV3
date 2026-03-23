@@ -120,8 +120,16 @@ if ($LASTEXITCODE -ne 0) { Fail "C++ build failed (see output above)" }
 Remove-Item $BuildBat
 
 # Verify output — pybind11 names it mesh_matcher.cpython-3XX-win_amd64.pyd
-$PydFile = Get-ChildItem $SrcBiz -Filter "mesh_matcher*.pyd" | Select-Object -First 1
+# MSVC may place the output in a Release/ subdirectory; search recursively and move it up
+$PydFile = Get-ChildItem $SrcBiz -Filter "mesh_matcher*.pyd" -Recurse | Select-Object -First 1
 if (-not $PydFile) { Fail "mesh_matcher.pyd not found in $SrcBiz after build" }
+# If it landed in a subdirectory (e.g. Release/), move it to $SrcBiz root
+if ($PydFile.DirectoryName -ne $SrcBiz) {
+    $dest = Join-Path $SrcBiz $PydFile.Name
+    Move-Item $PydFile.FullName $dest -Force
+    $PydFile = Get-Item $dest
+    Info "Moved .pyd to $SrcBiz"
+}
 Info "Built: $($PydFile.Name) ($([math]::Round($PydFile.Length/1KB))KB)"
 
 # Quick smoke-test
