@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D模型匹配系统</title>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部导航栏 -->
+    <nav class="navbar">
+      <div class="nav-brand">3D模型匹配系统</div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-page="blank">粗胚管理</button>
+        <button class="nav-tab" data-page="match">鞋模匹配</button>
+        <button class="nav-tab" data-page="history">历史记录</button>
+      </div>
+      <div class="nav-actions">
+        <button class="btn-icon" id="settings-btn" title="设置">⚙️</button>
+      </div>
+    </nav>
+
+    <!-- 主内容区域 -->
+    <main class="main-content">
+      <!-- 粗胚管理页面 -->
+      <div id="blank-page" class="page active">
+        <div class="page-header">
+          <h1>粗胚管理</h1>
+          <div class="header-actions">
+            <button class="btn-primary" id="upload-blank-btn">上传粗胚</button>
+          </div>
+        </div>
+
+        <div class="blank-layout">
+          <!-- 左侧：分类树 -->
+          <div class="category-sidebar">
+            <div class="sidebar-header">
+              <span class="sidebar-title">分类</span>
+              <button class="btn-icon" id="manage-categories-btn" title="管理分类" style="font-size:14px;padding:4px 8px;">⚙️</button>
+            </div>
+            <div id="category-sidebar-tree"></div>
+          </div>
+
+          <!-- 右侧：内容区 -->
+          <div class="blank-content">
+            <!-- 搜索和筛选栏 -->
+            <div class="filter-bar">
+              <input type="text" class="search-input" id="blank-search" placeholder="搜索粗胚名称...">
+              <select class="filter-select" id="blank-sort">
+                <option value="time-desc">按上传时间降序</option>
+                <option value="time-asc">按上传时间升序</option>
+                <option value="name-asc">按名称升序</option>
+              </select>
+            </div>
+
+            <!-- 批量操作栏 -->
+            <div class="batch-actions" id="blank-batch-actions" style="display: none;">
+              <span class="batch-count">已选择 <span id="blank-selected-count">0</span> 项</span>
+              <button class="btn-secondary" id="blank-batch-category">批量分类</button>
+              <button class="btn-secondary" id="blank-batch-delete">批量删除</button>
+            </div>
+
+            <!-- 粗胚网格视图 -->
+            <div class="blank-grid" id="blank-grid">
+              <!-- 动态生成 -->
+            </div>
+
+            <!-- 分页 -->
+            <div class="pagination" id="blank-pagination"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 鞋模匹配页面 -->
+      <div id="match-page" class="page">
+        <div class="page-header">
+          <h1>鞋模上传匹配</h1>
+        </div>
+
+        <!-- 匹配模块状态提示（仅当不可用时显示） -->
+        <div id="matcher-unavailable-banner" style="display:none;" class="matcher-banner">
+          <div class="matcher-banner-icon">⚠️</div>
+          <div class="matcher-banner-body">
+            <strong>匹配模块不可用</strong>
+            <p id="matcher-banner-detail"></p>
+            <code id="matcher-banner-hint"></code>
+          </div>
+          <button class="btn-secondary btn-sm" id="matcher-reload-btn">重新检测</button>
+        </div>
+
+        <div class="match-container">
+          <!-- 左侧：上传和配置 -->
+          <div class="match-left">
+            <!-- 鞋模上传区域 -->
+            <div class="upload-section">
+              <h2>上传鞋模</h2>
+              <div class="upload-zone" id="shoe-upload-zone">
+                <div class="upload-placeholder">
+                  <div class="upload-icon">📁</div>
+                  <p>拖拽鞋模文件到此处或点击上传</p>
+                  <p class="upload-hint">支持 STL、3DM 格式，单文件最大 500MB</p>
+                </div>
+                <input type="file" id="shoe-file-input" multiple accept=".stl,.3dm" style="display: none;">
+              </div>
+              <div class="uploaded-files" id="shoe-uploaded-files"></div>
+            </div>
+
+            <!-- 粗胚分类选择 -->
+            <div class="config-section">
+              <h2>选择粗胚分类</h2>
+              <div class="category-tree" id="category-tree"></div>
+            </div>
+
+            <!-- 匹配参数配置 -->
+            <div class="config-section">
+              <h2>匹配参数</h2>
+              <details>
+                <summary style="cursor:pointer;font-size:13px;color:var(--text-secondary);margin-bottom:10px;">展开高级参数</summary>
+                <div class="param-grid">
+                  <div class="param-group">
+                    <label>目标包裹率</label>
+                    <input type="number" id="param-wrapping-threshold" value="0.96" min="0" max="1" step="0.01">
+                  </div>
+                  <div class="param-group">
+                    <label>并发数</label>
+                    <input type="number" id="param-concurrent-matches" value="2" min="1" max="10">
+                  </div>
+                  <div class="param-group">
+                    <label>GA种群</label>
+                    <input type="number" id="param-ga-population" value="50" min="10" max="200">
+                  </div>
+                  <div class="param-group">
+                    <label>GA代数</label>
+                    <input type="number" id="param-ga-generations" value="30" min="10" max="100">
+                  </div>
+                  <div class="param-group">
+                    <label>交叉率</label>
+                    <input type="number" id="param-ga-crossover" value="0.8" min="0" max="1" step="0.1">
+                  </div>
+                  <div class="param-group">
+                    <label>变异率</label>
+                    <input type="number" id="param-ga-mutation" value="0.1" min="0" max="1" step="0.1">
+                  </div>
+                  <div class="param-group">
+                    <label>纵向位移 (mm)</label>
+                    <input type="number" id="param-translation-range" value="50" min="10" max="200">
+                  </div>
+                  <div class="param-group">
+                    <label>旋转范围 (°)</label>
+                    <input type="number" id="param-rotation-range" value="180" min="0" max="360">
+                  </div>
+                  <div class="param-group">
+                    <label>横向位移 (mm)</label>
+                    <input type="number" id="param-lateral-range" value="30" min="10" max="100">
+                  </div>
+                  <div class="param-group">
+                    <label>采样点数</label>
+                    <input type="number" id="param-sample-points" value="500" min="100" max="2000">
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <!-- 开始匹配按钮 -->
+            <button class="btn-primary btn-large" id="start-match-btn">开始匹配</button>
+          </div>
+
+          <!-- 右侧：进度和结果 -->
+          <div class="match-right">
+            <!-- 匹配进度 -->
+            <div class="progress-section" id="match-progress-section" style="display: none;">
+              <h2>匹配进度</h2>
+              <div class="progress-list" id="match-progress-list"></div>
+            </div>
+
+            <!-- 匹配结果 -->
+            <div class="results-section" id="match-results-section" style="display: none;">
+              <h2>匹配结果</h2>
+              <div class="results-list" id="match-results-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 历史记录页面 -->
+      <div id="history-page" class="page">
+        <div class="page-header">
+          <h1>历史匹配记录</h1>
+          <div class="header-actions">
+            <span class="refresh-indicator" id="history-refresh-indicator"></span>
+            <button class="btn-secondary" id="export-csv-btn">导出 CSV</button>
+            <button class="btn-secondary" id="export-excel-btn">导出 Excel</button>
+            <button class="btn-secondary" id="compare-btn">对比记录</button>
+          </div>
+        </div>
+
+        <!-- 筛选栏 -->
+        <div class="filter-bar">
+          <input type="text" class="search-input" id="history-search" placeholder="搜索鞋模名称...">
+          <input type="date" class="filter-input" id="history-date-from" placeholder="开始日期">
+          <input type="date" class="filter-input" id="history-date-to" placeholder="结束日期">
+        </div>
+
+        <!-- 记录表格 -->
+        <div class="table-container">
+          <table class="data-table" id="history-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="history-select-all"></th>
+                <th>鞋模名称</th>
+                <th>匹配结果</th>
+                <th>最佳粗胚</th>
+                <th>最佳包裹率</th>
+                <th>匹配时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="history-table-body">
+              <!-- 动态生成 -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 分页 -->
+        <div class="pagination" id="history-pagination"></div>
+      </div>
+    </main>
+
+    <!-- 模态框：粗胚预览 -->
+    <div class="modal" id="blank-preview-modal">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <div>
+            <h2 id="blank-preview-title">粗胚预览</h2>
+            <p class="modal-subtitle" id="blank-preview-subtitle"></p>
+          </div>
+          <button class="modal-close" id="blank-preview-close">×</button>
+        </div>
+        <div class="modal-body modal-body-split">
+          <div class="modal-3d-pane">
+            <div id="blank-preview-3d"></div>
+          </div>
+          <div class="modal-detail-pane">
+            <div id="blank-preview-info"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：匹配结果预览 -->
+    <div class="modal" id="match-result-modal">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <div>
+            <h2 id="match-result-modal-title">匹配结果预览</h2>
+            <p class="modal-subtitle" id="match-result-modal-subtitle"></p>
+          </div>
+          <button class="modal-close" id="match-result-close">×</button>
+        </div>
+        <div class="modal-body modal-body-split">
+          <div class="modal-3d-pane">
+            <div id="match-result-3d"></div>
+            <div class="viewer-legend">
+              <span class="legend-item legend-shoe">鞋模</span>
+              <span class="legend-item legend-blank-orig">粗胚（原始）</span>
+              <span class="legend-item legend-blank-trans">粗胚（变换后）</span>
+            </div>
+          </div>
+          <div class="modal-detail-pane">
+            <div class="result-overview-section" id="match-result-overview"></div>
+            <div class="result-detail-section" id="match-result-details"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：分类管理 -->
+    <div class="modal" id="category-modal">
+      <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-header">
+          <h2>分类管理</h2>
+          <button class="modal-close" id="category-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom: 16px;">
+            <button class="btn-primary" id="create-category-btn">+ 新建分类</button>
+          </div>
+          <div class="category-tree" id="category-management-tree" style="max-height: 400px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：创建分类 -->
+    <div class="modal" id="create-category-modal">
+      <div class="modal-content" style="max-width: 400px;">
+        <div class="modal-header">
+          <h2>创建分类</h2>
+          <button class="modal-close" id="create-category-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom: 16px;">
+            <label>父分类（可选）</label>
+            <select id="create-category-parent" class="filter-select" style="width: 100%;">
+              <option value="">无（顶级分类）</option>
+            </select>
+          </div>
+          <div style="margin-bottom: 16px;">
+            <label>分类名称</label>
+            <input type="text" id="create-category-name" class="search-input" placeholder="输入分类名称" style="width: 100%;">
+          </div>
+          <div style="text-align: right;">
+            <button class="btn-secondary" id="create-category-cancel">取消</button>
+            <button class="btn-primary" id="create-category-submit">创建</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：设置 -->
+    <div class="modal" id="settings-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>设置</h2>
+          <button class="modal-close" id="settings-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="settings-content">
+            <div class="setting-item">
+              <label>自动保存间隔（秒）</label>
+              <input type="number" id="setting-autosave-interval" value="30" min="10" max="300">
+            </div>
+            <div class="setting-item">
+              <label>默认并发匹配数量</label>
+              <input type="number" id="setting-default-concurrent" value="2" min="1" max="10">
+            </div>
+            <div class="setting-item">
+              <label>显示引导教程</label>
+              <input type="checkbox" id="setting-show-tutorial" checked>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 引导教程遮罩 -->
+  <div class="tutorial-overlay" id="tutorial-overlay" style="display: none;"></div>
+
+  <!-- Three.js库 -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <!-- OrbitControls加载器 -->
+  <script src="js/orbit-controls-loader.js" type="module"></script>
+  <!-- XLSX库（用于Excel导出） -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  
+  <script src="js/api.js"></script>
+  <script src="js/3d-viewer.js"></script>
+  <script src="js/result-detail-view.js"></script>
+  <script src="js/blank-manager.js"></script>
+  <script src="js/match-manager.js"></script>
+  <script src="js/history-manager.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

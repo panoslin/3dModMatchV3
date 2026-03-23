@@ -70,23 +70,29 @@ def find_optimal_match(
     
     # 遍历所有候选粗胚
     valid_matches = []
-    
+    all_candidate_results = []  # 收集所有候选结果（包括未通过阈值的）
+
     for idx, candidate_file in enumerate(candidate_files):
         if verbose:
             print(f"\n[{idx+1}/{len(candidate_files)}] 检查候选: {candidate_file.name}")
-        
+
         try:
             # 加载候选粗胚
             candidate_vertices, candidate_faces = load_3dm_file(
                 candidate_file, mesh_quality='high'
             )
-            
+
             # 加载到匹配器
             if not matcher.load_candidate_mesh(candidate_vertices, candidate_faces):
                 if verbose:
                     print("  ⚠️  无法加载网格数据")
+                all_candidate_results.append({
+                    'candidate_path': str(candidate_file),
+                    'candidate_name': candidate_file.name,
+                    'error': '无法加载网格数据',
+                })
                 continue
-            
+
             # 执行优化匹配
             start_time = time.time()
             result = matcher.match_optimized(
@@ -94,10 +100,10 @@ def find_optimal_match(
                 ga_params=ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams()
             )
             match_time = time.time() - start_time
-            
+
             result.candidate_index = idx
             result.candidate_path = str(candidate_file)
-            
+
             if verbose:
                 print(f"  方向对齐验证:")
                 print(f"    鞋跟-鞋头对齐: {result.direction_alignment.heel_toe_alignment:.4f} "
@@ -110,7 +116,30 @@ def find_optimal_match(
                 print(f"  体积: {result.volume:.2f}")
                 print(f"  最优平移: {result.optimal_translation:.4f}")
                 print(f"  匹配时间: {match_time*1000:.2f}ms")
-            
+
+            # 记录该候选的完整结果（无论是否通过阈值）
+            candidate_result = {
+                'candidate_path': str(candidate_file),
+                'candidate_name': candidate_file.name,
+                'wrapping_ratio': result.wrapping_ratio,
+                'percentile96_clearance': result.percentile96_clearance,
+                'volume': result.volume,
+                'is_fully_wrapped': result.is_fully_wrapped,
+                'meets_direction_constraints': result.meets_direction_constraints,
+                'optimal_translation': result.optimal_translation,
+                'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
+                'optimal_lateral_offset': result.optimal_lateral_offset,
+                'match_time_ms': match_time * 1000,
+                'direction_alignment': {
+                    'heel_toe_alignment': result.direction_alignment.heel_toe_alignment,
+                    'vertical_alignment': result.direction_alignment.vertical_alignment,
+                    'heel_toe_angle_deg': result.direction_alignment.heel_toe_angle_deg,
+                    'vertical_angle_deg': result.direction_alignment.vertical_angle_deg,
+                    'is_valid': result.direction_alignment.is_valid,
+                },
+            }
+            all_candidate_results.append(candidate_result)
+
             # 检查是否满足所有条件
             if (result.meets_direction_constraints and
                 result.is_fully_wrapped):
@@ -125,24 +154,35 @@ def find_optimal_match(
                     if not result.is_fully_wrapped:
                         reasons.append("不完全包裹")
                     print(f"  ❌ 不满足匹配条件: {', '.join(reasons)}")
-                    
+
         except ThreeDMFileError as e:
             if verbose:
                 print(f"  ❌ 无法加载文件: {e}")
+            all_candidate_results.append({
+                'candidate_path': str(candidate_file),
+                'candidate_name': candidate_file.name,
+                'error': str(e),
+            })
             continue
         except Exception as e:
             if verbose:
                 print(f"  ❌ 匹配过程出错: {e}")
                 import traceback
                 traceback.print_exc()
+            all_candidate_results.append({
+                'candidate_path': str(candidate_file),
+                'candidate_name': candidate_file.name,
+                'error': str(e),
+            })
             continue
-    
-    # 如果没有有效匹配，返回None
+
+    # 如果没有有效匹配，返回None（但仍包含所有候选结果数据）
     if not valid_matches:
         return None, {
             'error': 'No valid matches found',
             'total_candidates': len(candidate_files),
-            'valid_matches': 0
+            'valid_matches': 0,
+            'all_candidate_results': all_candidate_results,
         }
     
     # 选择体积最小的匹配
@@ -153,7 +193,13 @@ def find_optimal_match(
         'candidate_path': result.candidate_path,
         'volume': result.volume,
         'wrapping_ratio': result.wrapping_ratio,
+        'percentile96_clearance': result.percentile96_clearance,
         'optimal_translation': result.optimal_translation,
+        'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
+        'optimal_lateral_offset': result.optimal_lateral_offset,
+        'is_fully_wrapped': result.is_fully_wrapped,
+        'meets_direction_constraints': result.meets_direction_constraints,
+        'target_wrapping_ratio': wrapping_threshold,
         'direction_alignment': {
             'heel_toe_alignment': result.direction_alignment.heel_toe_alignment,
             'vertical_alignment': result.direction_alignment.vertical_alignment,
@@ -161,9 +207,20 @@ def find_optimal_match(
             'vertical_angle_deg': result.direction_alignment.vertical_angle_deg,
             'is_valid': result.direction_alignment.is_valid
         },
+        'generation_history': [
+            {
+                'generation': g.generation,
+                'best_fitness': g.best_fitness,
+                'avg_fitness': g.avg_fitness,
+                'translation': g.translation,
+                'rotation_angle_deg': g.rotation_angle_deg,
+                'lateral_offset': g.lateral_offset,
+            } for g in result.generation_history
+        ],
         'match_time_ms': match_time * 1000,
         'total_valid_matches': len(valid_matches),
-        'total_candidates': len(candidate_files)
+        'total_candidates': len(candidate_files),
+        'all_candidate_results': all_candidate_results,
     }
 
 

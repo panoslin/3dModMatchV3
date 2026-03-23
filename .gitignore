@@ -1,0 +1,16 @@
+.idea
+match_results/
+
+# Build artifacts
+src/core/build/
+src/biz/__pycache__/
+src/biz/*.pyc
+build_deps/          # Downloaded Eigen headers (Windows build)
+desktop-app/venv/
+desktop-app/dist/
+desktop-app/node_modules/
+desktop-app/data/
+desktop-app/test-results/
+.playwright-mcp/
+tmp/
+.cursor/

@@ -61,11 +61,9 @@ pybind11_add_module(mesh_matcher ${SOURCES})
 # Include Eigen headers
 target_include_directories(mesh_matcher PRIVATE ${EIGEN3_INCLUDE_DIR})
 
-# Set output directory
+# Set output directory — let pybind11 set PREFIX/SUFFIX automatically
 set_target_properties(mesh_matcher PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../biz"
-    PREFIX ""
-    SUFFIX "${PYTHON3_MODULE_EXTENSION}"
 )
 
 # Find OpenMP
@@ -77,11 +75,14 @@ else()
     message(WARNING "OpenMP not found, parallel processing disabled")
 endif()
 
-# Compiler flags for optimization
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    target_compile_options(mesh_matcher PRIVATE -O3 -march=native -ffast-math)
+# Compiler flags for optimization (cross-platform)
+if(MSVC)
+    target_compile_options(mesh_matcher PRIVATE $<$<CONFIG:Release>:/O2 /GL>)
 else()
-    target_compile_options(mesh_matcher PRIVATE -g -O0)
+    target_compile_options(mesh_matcher PRIVATE
+        $<$<CONFIG:Release>:-O3 -march=native -ffast-math>
+        $<$<CONFIG:Debug>:-g -O0>
+    )
 endif()
 
 # Add Eigen include to source files

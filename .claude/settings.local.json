@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(ls -la /Volumes/PanosT9/Projects/3dModMatchV3/desktop-app/*.js)",
+      "Bash(xargs ls:*)",
+      "Bash(echo \"LDFLAGS=$LDFLAGS\")",
+      "Bash(echo \"CPPFLAGS=$CPPFLAGS\")",
+      "Bash(echo \"CC=$CC\")",
+      "Bash(echo \"CXX=$CXX\")",
+      "Bash(/opt/homebrew/bin/python3.10 --version)",
+      "Bash(/opt/homebrew/bin/python3.10 -c \"import sysconfig; print\\(sysconfig.get_config_var\\(''EXT_SUFFIX''\\)\\)\")",
+      "Bash(/opt/homebrew/bin/python3.10 -c \"import pybind11; print\\(pybind11.get_cmake_dir\\(\\)\\)\")",
+      "Bash(/opt/homebrew/bin/pip3.10 install:*)",
+      "Bash(echo:*)",
+      "Bash(ls -lh /Volumes/PanosT9/Projects/3dModMatchV3/src/biz/mesh_matcher*)",
+      "Bash(/opt/homebrew/bin/python3.10 -c \"import sys; sys.path.insert\\(0, '/Volumes/PanosT9/Projects/3dModMatchV3/src/biz'\\); import mesh_matcher; print\\('✅ 模块导入成功'\\); print\\(dir\\(mesh_matcher\\)\\)\")",
+      "Bash(/opt/homebrew/bin/python3.10 -c \"\nimport sys\nsys.path.insert\\(0, '/Volumes/PanosT9/Projects/3dModMatchV3/src/biz'\\)\nfrom load_3dm import load_3dm_file, get_3dm_file_info\nimport mesh_matcher\nfrom matcher import find_optimal_match\nprint\\('✅ All imports successful'\\)\nprint\\('mesh_matcher:', mesh_matcher.__file__\\)\n\" 2>&1)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_handle_dialog",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_file_upload",
+      "mcp__playwright__browser_evaluate",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_wait_for"
+    ]
+  }
+}
