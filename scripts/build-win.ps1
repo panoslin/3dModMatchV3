@@ -132,8 +132,9 @@ if ($PydFile.DirectoryName -ne $SrcBiz) {
 }
 Info "Built: $($PydFile.Name) ($([math]::Round($PydFile.Length/1KB))KB)"
 
-# Quick smoke-test
-& $Python -c "import sys; sys.path.insert(0,'$SrcBiz'); import mesh_matcher; print('  import OK:', mesh_matcher.__file__)"
+# Quick smoke-test (use forward slashes to avoid Python interpreting \b, \n, etc.)
+$SrcBizFwd = $SrcBiz.Replace('\','/')
+& $Python -c "import sys; sys.path.insert(0,'$SrcBizFwd'); import mesh_matcher; print('  import OK:', mesh_matcher.__file__)"
 if ($LASTEXITCODE -ne 0) { Fail "Module import smoke-test failed" }
 
 # ── 5. Bundled Python venv ────────────────────────────────────────────────────
