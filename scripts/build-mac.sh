@@ -100,6 +100,31 @@ rm -rf "$VENV_DIR"
 "$PYTHON" -m venv --copies "$VENV_DIR"
 
 VENV_PY="$VENV_DIR/bin/python3"
+
+# ── 4.1 Fix Python dylib for portability ─────────────────────────────────
+# venv python3 links to the build machine's Python framework (e.g.
+# /Library/Frameworks/Python.framework/Versions/3.11/Python).
+# Copy that dylib into the venv and rewrite the reference so the app
+# works on machines without that exact Python installation.
+info "Fixing Python dylib references for portability..."
+
+PYTHON_DYLIB=$(otool -L "$VENV_PY" | grep -oE '/[^ ]*Python\.framework/[^ ]+' | head -1)
+if [[ -z "$PYTHON_DYLIB" ]]; then
+    PYTHON_DYLIB=$(otool -L "$VENV_PY" | grep -oE '/[^ ]*libpython[^ ]+' | head -1)
+fi
+
+if [[ -n "$PYTHON_DYLIB" ]] && [[ -f "$PYTHON_DYLIB" ]]; then
+    DYLIB_NAME=$(basename "$PYTHON_DYLIB")
+    mkdir -p "$VENV_DIR/lib"
+    cp "$PYTHON_DYLIB" "$VENV_DIR/lib/$DYLIB_NAME"
+    install_name_tool -change "$PYTHON_DYLIB" "@executable_path/../lib/$DYLIB_NAME" "$VENV_PY"
+    # Ad-hoc re-sign (required on Apple Silicon after modifying the binary)
+    codesign --force --sign - "$VENV_PY" 2>/dev/null || true
+    info "Bundled $DYLIB_NAME and updated dylib reference"
+else
+    warn "Could not find Python dylib to bundle — app may not be portable"
+fi
+
 "$VENV_PY" -m pip install --upgrade pip --quiet
 "$VENV_PY" -m pip install -r "$DESKTOP_DIR/backend/requirements.txt" --quiet
 info "Python packages installed into venv."
