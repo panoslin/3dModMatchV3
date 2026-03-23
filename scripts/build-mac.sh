@@ -117,9 +117,11 @@ if [[ -n "$PYTHON_DYLIB" ]] && [[ -f "$PYTHON_DYLIB" ]]; then
     DYLIB_NAME=$(basename "$PYTHON_DYLIB")
     mkdir -p "$VENV_DIR/lib"
     cp "$PYTHON_DYLIB" "$VENV_DIR/lib/$DYLIB_NAME"
+    # Ad-hoc sign the copied dylib first (macOS rejects unsigned/invalid-signed dylibs)
+    codesign --force --sign - "$VENV_DIR/lib/$DYLIB_NAME"
     install_name_tool -change "$PYTHON_DYLIB" "@executable_path/../lib/$DYLIB_NAME" "$VENV_PY"
-    # Ad-hoc re-sign (required on Apple Silicon after modifying the binary)
-    codesign --force --sign - "$VENV_PY" 2>/dev/null || true
+    # Ad-hoc re-sign the binary (required on Apple Silicon after modifying it)
+    codesign --force --sign - "$VENV_PY"
     info "Bundled $DYLIB_NAME and updated dylib reference"
 else
     warn "Could not find Python dylib to bundle — app may not be portable"
