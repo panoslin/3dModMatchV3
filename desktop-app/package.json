@@ -56,7 +56,7 @@
           "**/bin/activate*",
           "**/lib/Python",
           "**/lib/libpython*",
-          "**/lib/python*/site-packages/**/*",
+          "**/lib/python*/**/*",
           "**/Scripts/python*",
           "**/Scripts/activate*",
           "**/Lib/site-packages/**/*",

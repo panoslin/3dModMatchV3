@@ -131,6 +131,20 @@ if [[ -n "$REAL_PYTHON_BIN" ]] && [[ -f "$REAL_PYTHON_BIN" ]]; then
     # Rewrite dylib reference to relative path
     install_name_tool -change "$PYTHON_DYLIB" "@executable_path/../lib/$DYLIB_NAME" "$VENV_PY"
 
+    # Copy stdlib into venv (the real binary has hardcoded prefix pointing to
+    # the framework; we bundle the stdlib so PYTHONHOME can override the prefix)
+    PY_VER=$("$PYTHON" -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
+    FRAMEWORK_STDLIB="$FRAMEWORK_VER_DIR/lib/$PY_VER"
+    if [[ -d "$FRAMEWORK_STDLIB" ]]; then
+        info "Copying stdlib ($PY_VER) into venv..."
+        rsync -a --exclude='site-packages' --exclude='__pycache__' --exclude='test' \
+            --exclude='tests' --exclude='idle_test' --exclude='tkinter' \
+            "$FRAMEWORK_STDLIB/" "$VENV_DIR/lib/$PY_VER/"
+        info "Stdlib copied ($(du -sh "$VENV_DIR/lib/$PY_VER" | cut -f1) total)"
+    else
+        warn "Could not find stdlib at $FRAMEWORK_STDLIB"
+    fi
+
     # Ad-hoc sign both (required on Apple Silicon)
     codesign --force --sign - "$VENV_DIR/lib/$DYLIB_NAME"
     codesign --force --sign - "$VENV_PY"

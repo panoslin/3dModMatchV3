@@ -94,10 +94,13 @@ function startBackend() {
       PYTHONPATH: pythonPathEnv
     };
     
-    // 如果使用虚拟环境，添加虚拟环境的site-packages到PYTHONPATH
+    // 如果使用虚拟环境，设置 PYTHONHOME 并添加 site-packages 到 PYTHONPATH
     if (pythonPath.includes('venv')) {
       // pythonPath = .../venv/bin/python3  → dirname = .../venv/bin  → .. = .../venv
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
+      // PYTHONHOME tells the bundled Python where to find stdlib (encodings, os, etc.)
+      env.PYTHONHOME = venvRoot;
+      console.log('设置PYTHONHOME:', venvRoot);
       // macOS/Linux: venv/lib/pythonX.Y/site-packages
       // Windows:     venv/Lib/site-packages
       let sitePackagesPath = null;

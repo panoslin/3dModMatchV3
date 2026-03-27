@@ -4,6 +4,15 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a draft Release after build'
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release tag (e.g. v1.0.0). Required if creating a release.'
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -55,7 +64,9 @@ jobs:
           path: desktop-app/dist/*.exe
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v')
+      || (github.event_name == 'workflow_dispatch' && inputs.create_release)
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
@@ -64,9 +75,19 @@ jobs:
       - name: List artifacts
         run: find . -type f \( -name '*.dmg' -o -name '*.exe' \) | head -20
 
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ inputs.release_tag || format('v{0}', github.run_number) }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.name }}
           draft: true
           generate_release_notes: true
           files: |
