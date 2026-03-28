@@ -156,8 +156,67 @@ class API {
     return this.request(`/history?${query}`);
   }
 
-  // 匹配结果预览API
+  // 匹配结果预览API（二进制格式）
   static async getMatchResultPreview(recordId) {
-    return this.request(`/match/result/${recordId}/preview`);
+    const url = `${API_BASE_URL}/match/result/${recordId}/preview`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      let msg = `HTTP ${response.status}`;
+      try { const e = await response.json(); msg = e.error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      // 后端返回了 JSON 错误
+      const e = await response.json();
+      throw new Error(e.error || 'unknown error');
+    }
+    const buf = await response.arrayBuffer();
+    return this._decodeBinaryPreview(buf);
+  }
+
+  /**
+   * 解码二进制预览格式 (.binprev)
+   * Header 32B: magic(4) version(2) pad(2) n_tv(4) n_tf(4) n_cv(4) n_cf(4) meta_len(4) pad(4)
+   * Body: tv(f32) tf(u32) cv(f32) cf(u32) meta(utf8)
+   */
+  static _decodeBinaryPreview(buffer) {
+    const view = new DataView(buffer);
+    // 验证 magic
+    const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+    if (magic !== 'BPV1') throw new Error('invalid preview format');
+
+    const nTv = view.getUint32(8, true);
+    const nTf = view.getUint32(12, true);
+    const nCv = view.getUint32(16, true);
+    const nCf = view.getUint32(20, true);
+    const metaLen = view.getUint32(24, true);
+
+    let off = 32;
+    const tvBytes = nTv * 3 * 4;
+    const targetVertices = new Float32Array(buffer, off, nTv * 3); off += tvBytes;
+    const tfBytes = nTf * 3 * 4;
+    const targetFaces = new Uint32Array(buffer, off, nTf * 3); off += tfBytes;
+    const cvBytes = nCv * 3 * 4;
+    const candidateVertices = new Float32Array(buffer, off, nCv * 3); off += cvBytes;
+    const cfBytes = nCf * 3 * 4;
+    const candidateFaces = new Uint32Array(buffer, off, nCf * 3); off += cfBytes;
+
+    const metaBytes = new Uint8Array(buffer, off, metaLen);
+    const metadata = JSON.parse(new TextDecoder().decode(metaBytes));
+
+    return {
+      ...metadata,
+      // 直接传递 TypedArray，不需要嵌套数组
+      _binary: true,
+      target_vertices: targetVertices,
+      target_faces: targetFaces,
+      candidate_vertices: candidateVertices,
+      candidate_faces: candidateFaces,
+    };
+  }
+
+  static async deleteMatchRecord(recordId) {
+    return this.request(`/match/record/${recordId}`, { method: 'DELETE' });
   }
 }

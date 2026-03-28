@@ -1208,6 +1208,7 @@ body {
 }
 
 #match-result-3d {
+  position: relative;
   flex: 1;
   width: 100%;
   min-height: 0;
@@ -1314,6 +1315,21 @@ body {
   font-size: 10px;
   color: #888;
   line-height: 1.6;
+}
+
+.viewer-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(26, 26, 26, 0.75);
+  z-index: 10;
+  pointer-events: none;
+}
+.viewer-loading-overlay span {
+  color: #ccc;
+  font-size: 14px;
 }
 
 .modal-detail-pane {

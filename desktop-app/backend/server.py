@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import struct
 import sqlite3  # Python标准库，无需额外安装
 import uuid
 import threading
@@ -196,6 +197,131 @@ except OSError as e:
 
 ALLOWED_EXTENSIONS = {'stl', '3dm'}
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+
+# ─── 二进制预览缓存 ───────────────────────────────────────────────
+CACHE_DIR = DATA_DIR / 'preview_cache'
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# 二进制预览文件格式 (.binprev):
+#   Header (固定 32 字节):
+#     magic       4B   b'BPV1'
+#     version     u16  1
+#     reserved    2B
+#     n_tv        u32  target_vertices count (Nx3 floats)
+#     n_tf        u32  target_faces count (Mx3 uint32)
+#     n_cv        u32  candidate_vertices count
+#     n_cf        u32  candidate_faces count
+#     meta_len    u32  metadata JSON 字节长度
+#     reserved2   4B
+#   Body:
+#     target_vertices   n_tv*3 float32
+#     target_faces      n_tf*3 uint32
+#     candidate_verts   n_cv*3 float32
+#     candidate_faces   n_cf*3 uint32
+#     metadata_json     meta_len bytes (UTF-8)
+
+_BPV_MAGIC = b'BPV1'
+_BPV_HEADER_FMT = '<4sHxx5I4x'  # 32 bytes
+_BPV_HEADER_SIZE = struct.calcsize(_BPV_HEADER_FMT)
+
+
+class PreviewCache:
+    """LRU + TTL 二进制预览缓存"""
+
+    def __init__(self, cache_dir: Path, max_entries: int = 200, ttl_hours: int = 72):
+        self._dir = cache_dir
+        self._max = max_entries
+        self._ttl_sec = ttl_hours * 3600
+        self._lock = threading.Lock()
+
+    def _path(self, record_id: int) -> Path:
+        return self._dir / f'{record_id}.binprev'
+
+    # ── 读取 ──
+
+    def get(self, record_id: int) -> bytes | None:
+        p = self._path(record_id)
+        if not p.exists():
+            return None
+        age = datetime.now().timestamp() - p.stat().st_mtime
+        if age > self._ttl_sec:
+            p.unlink(missing_ok=True)
+            return None
+        # touch atime 用于 LRU 排序
+        p.touch()
+        return p.read_bytes()
+
+    # ── 写入 ──
+
+    def put(self, record_id: int, data: bytes) -> None:
+        with self._lock:
+            self._path(record_id).write_bytes(data)
+            self._evict()
+
+    # ── 删除 ──
+
+    def delete(self, record_id: int) -> None:
+        self._path(record_id).unlink(missing_ok=True)
+
+    # ── LRU 淘汰 ──
+
+    def _evict(self) -> None:
+        files = sorted(self._dir.glob('*.binprev'), key=lambda f: f.stat().st_mtime)
+        now = datetime.now().timestamp()
+        # 先淘汰过期
+        for f in files:
+            if now - f.stat().st_mtime > self._ttl_sec:
+                f.unlink(missing_ok=True)
+        # 再按 LRU 淘汰超额
+        files = sorted(self._dir.glob('*.binprev'), key=lambda f: f.stat().st_mtime)
+        while len(files) > self._max:
+            files[0].unlink(missing_ok=True)
+            files.pop(0)
+
+
+preview_cache = PreviewCache(CACHE_DIR, max_entries=200, ttl_hours=72)
+
+
+def pack_preview_binary(
+    target_vertices: np.ndarray, target_faces: np.ndarray,
+    candidate_vertices: np.ndarray, candidate_faces: np.ndarray,
+    metadata: dict,
+) -> bytes:
+    """将预览数据打包为紧凑二进制格式"""
+    tv = target_vertices.astype(np.float32)
+    tf = target_faces.astype(np.uint32)
+    cv = candidate_vertices.astype(np.float32)
+    cf = candidate_faces.astype(np.uint32)
+    meta_bytes = json.dumps(metadata, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+
+    header = struct.pack(
+        _BPV_HEADER_FMT,
+        _BPV_MAGIC,
+        1,  # version
+        len(tv), len(tf), len(cv), len(cf),
+        len(meta_bytes),
+    )
+    return header + tv.tobytes() + tf.tobytes() + cv.tobytes() + cf.tobytes() + meta_bytes
+
+
+def unpack_preview_binary(data: bytes) -> tuple:
+    """解包二进制预览数据，返回 (tv, tf, cv, cf, metadata)"""
+    magic, ver, n_tv, n_tf, n_cv, n_cf, meta_len = struct.unpack(_BPV_HEADER_FMT, data[:_BPV_HEADER_SIZE])
+    if magic != _BPV_MAGIC:
+        raise ValueError('invalid preview cache magic')
+    off = _BPV_HEADER_SIZE
+    tv = np.frombuffer(data, dtype=np.float32, count=n_tv * 3, offset=off).reshape(-1, 3)
+    off += n_tv * 3 * 4
+    tf = np.frombuffer(data, dtype=np.uint32, count=n_tf * 3, offset=off).reshape(-1, 3)
+    off += n_tf * 3 * 4
+    cv = np.frombuffer(data, dtype=np.float32, count=n_cv * 3, offset=off).reshape(-1, 3)
+    off += n_cv * 3 * 4
+    cf = np.frombuffer(data, dtype=np.uint32, count=n_cf * 3, offset=off).reshape(-1, 3)
+    off += n_cf * 3 * 4
+    meta = json.loads(data[off:off + meta_len].decode('utf-8'))
+    return tv, tf, cv, cf, meta
+
+# ─── END 二进制预览缓存 ──────────────────────────────────────────
 
 # 任务队列
 match_queue = queue.Queue()
@@ -827,16 +953,12 @@ def cancel_match_task(task_id):
         return jsonify({'success': True})
 
 # 匹配结果3D数据API
-@app.route('/api/match/result/<int:record_id>/preview', methods=['GET'])
-def get_match_result_preview(record_id):
-    """获取匹配结果的3D预览数据（复刻src/viz格式）"""
-    if not MATCHER_AVAILABLE or mesh_matcher is None:
-        return jsonify({'error': '匹配模块不可用，无法生成3D预览'}), 503
-    
+def _compute_preview_data(record_id: int) -> bytes:
+    """计算预览数据并打包为二进制格式，供缓存和响应使用"""
+    import math
+
     conn = sqlite3.connect(str(DB_PATH))
     c = conn.cursor()
-    
-    # 获取匹配记录
     c.execute('''
         SELECT m.*, s.file_path as shoe_path, b.file_path as blank_path
         FROM match_records m
@@ -844,140 +966,104 @@ def get_match_result_preview(record_id):
         LEFT JOIN blanks b ON m.blank_id = b.id
         WHERE m.id = ?
     ''', (record_id,))
-    
     record = c.fetchone()
     if not record:
         conn.close()
-        return jsonify({'error': '记录不存在'}), 404
-    
-    # 转换为字典
+        raise ValueError('记录不存在')
+
     record_dict = dict(zip([col[0] for col in c.description], record))
     result_data = json.loads(record_dict.get('result_data', '{}'))
-    
     shoe_path = Path(record_dict['shoe_path'])
     blank_path = Path(record_dict['blank_path'])
-    
-    # 从数据库获取匹配参数
     optimal_translation = record_dict.get('optimal_translation', 0.0)
     optimal_rotation_angle_deg = record_dict.get('optimal_rotation_angle_deg', 0.0)
     optimal_lateral_offset = record_dict.get('optimal_lateral_offset', 0.0)
     wrapping_threshold = result_data.get('target_wrapping_ratio', 0.96)
-    
     conn.close()
-    
-    try:
-        # 加载文件
-        mesh_quality = request.args.get('mesh_quality', 'high')
-        target_vertices, target_faces = load_3dm_file(str(shoe_path), mesh_quality=mesh_quality)
-        candidate_vertices, candidate_faces = load_3dm_file(str(blank_path), mesh_quality=mesh_quality)
-        
-        # =========================
-        # 复刻 src/viz 的方向对齐逻辑
-        # =========================
-        def _normalize(v: np.ndarray) -> np.ndarray:
-            n = np.linalg.norm(v)
-            return v if n == 0 else (v / n)
 
-        def _build_frame(longitudinal: np.ndarray, vertical: np.ndarray) -> np.ndarray:
-            # 对齐 matcher.cpp::alignDirections 的 frame 构建逻辑
-            x = _normalize(longitudinal)
-            side = np.cross(x, vertical)
-            if np.linalg.norm(side) < 1e-6:
-                if abs(x[0]) < 0.9:
-                    side = np.cross(x, np.array([1.0, 0.0, 0.0]))
-                else:
-                    side = np.cross(x, np.array([0.0, 1.0, 0.0]))
-            y = _normalize(side)
-            z = _normalize(np.cross(x, y))
-            return np.column_stack([x, y, z])
+    target_vertices, target_faces = load_3dm_file(str(shoe_path), mesh_quality='high')
+    candidate_vertices, candidate_faces = load_3dm_file(str(blank_path), mesh_quality='high')
 
-        target_longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
-        ), dtype=float)
-        target_longitudinal_axis = _normalize(target_longitudinal_axis)
+    def _normalize(v: np.ndarray) -> np.ndarray:
+        n = np.linalg.norm(v)
+        return v if n == 0 else (v / n)
 
-        target_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()
-        ), dtype=float)
-        target_vertical_axis = _normalize(target_vertical_axis)
+    def _build_frame(longitudinal: np.ndarray, vertical: np.ndarray) -> np.ndarray:
+        x = _normalize(longitudinal)
+        side = np.cross(x, vertical)
+        if np.linalg.norm(side) < 1e-6:
+            if abs(x[0]) < 0.9:
+                side = np.cross(x, np.array([1.0, 0.0, 0.0]))
+            else:
+                side = np.cross(x, np.array([0.0, 1.0, 0.0]))
+        y = _normalize(side)
+        z = _normalize(np.cross(x, y))
+        return np.column_stack([x, y, z])
 
-        candidate_longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
-            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()
-        ), dtype=float)
-        candidate_longitudinal_axis = _normalize(candidate_longitudinal_axis)
+    target_longitudinal_axis = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            target_vertices.flatten().tolist(), target_faces.flatten().tolist()),
+        dtype=float))
+    target_vertical_axis = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_vertical_axis(
+            target_vertices.flatten().tolist(), target_faces.flatten().tolist()),
+        dtype=float))
+    candidate_longitudinal_axis = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()),
+        dtype=float))
+    candidate_vertical_axis = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_vertical_axis(
+            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()),
+        dtype=float))
 
-        candidate_vertical_axis = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
-            candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()
-        ), dtype=float)
-        candidate_vertical_axis = _normalize(candidate_vertical_axis)
+    target_frame = _build_frame(target_longitudinal_axis, target_vertical_axis)
+    candidate_frame = _build_frame(candidate_longitudinal_axis, candidate_vertical_axis)
+    rotation_matrix_align = candidate_frame @ target_frame.T
 
-        target_frame = _build_frame(target_longitudinal_axis, target_vertical_axis)
-        candidate_frame = _build_frame(candidate_longitudinal_axis, candidate_vertical_axis)
-        rotation_matrix_align = candidate_frame @ target_frame.T
+    target_center = np.mean(target_vertices, axis=0)
+    target_vertices_aligned = (rotation_matrix_align @ (target_vertices - target_center).T).T + target_center
 
-        # 旋转 target 顶点（绕 target 质心旋转）
-        target_center = np.mean(target_vertices, axis=0)
-        target_vertices_aligned = target_vertices - target_center
-        target_vertices_aligned = (rotation_matrix_align @ target_vertices_aligned.T).T + target_center
+    longitudinal_axis = candidate_longitudinal_axis.copy()
+    candidate_center = np.mean(candidate_vertices, axis=0)
 
-        # 计算纵向轴和质心（用于构建转换矩阵）
-        longitudinal_axis = candidate_longitudinal_axis.copy()
-        candidate_center = np.mean(candidate_vertices, axis=0)
-        
-        # 重新计算目标（鞋模）在"对齐后坐标系"下的轴与质心（用于可视化同步）
-        target_longitudinal_axis_aligned = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
-            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()
-        ), dtype=float)
-        target_longitudinal_axis_aligned = target_longitudinal_axis_aligned / np.linalg.norm(target_longitudinal_axis_aligned)
+    target_longitudinal_axis_aligned = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()),
+        dtype=float))
+    target_vertical_axis_aligned = _normalize(np.array(
+        mesh_matcher.MeshMatcher.compute_vertical_axis(
+            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()),
+        dtype=float))
+    target_center_aligned = np.mean(target_vertices_aligned, axis=0)
 
-        target_vertical_axis_aligned = np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
-            target_vertices_aligned.flatten().tolist(), target_faces.flatten().tolist()
-        ), dtype=float)
-        target_vertical_axis_aligned = target_vertical_axis_aligned / np.linalg.norm(target_vertical_axis_aligned)
+    target_lateral_axis = _normalize(np.cross(target_longitudinal_axis_aligned, target_vertical_axis_aligned))
+    candidate_lateral_axis = _normalize(np.cross(longitudinal_axis, candidate_vertical_axis))
 
-        target_center_aligned = np.mean(target_vertices_aligned, axis=0)
-        
-        # 计算横向轴
-        target_lateral_axis = np.cross(target_longitudinal_axis_aligned, target_vertical_axis_aligned)
-        target_lateral_axis = target_lateral_axis / np.linalg.norm(target_lateral_axis)
-        
-        candidate_lateral_axis = np.cross(longitudinal_axis, candidate_vertical_axis)
-        candidate_lateral_axis = candidate_lateral_axis / np.linalg.norm(candidate_lateral_axis)
-        
-        # 构建转换矩阵（绕纵向轴旋转 + 平移）
-        import math
-        angle_rad = math.radians(optimal_rotation_angle_deg)
-        cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
-        
-        K = np.array([
-            [0, -longitudinal_axis[2], longitudinal_axis[1]],
-            [longitudinal_axis[2], 0, -longitudinal_axis[0]],
-            [-longitudinal_axis[1], longitudinal_axis[0], 0]
-        ])
-        
-        R_rotate = np.eye(3) + sin_a * K + (1 - cos_a) * np.dot(K, K)
-        translation_vec = longitudinal_axis * optimal_translation + candidate_lateral_axis * optimal_lateral_offset
-        
-        # 应用转换矩阵到候选网格
-        candidate_vertices_transformed = candidate_vertices.copy()
-        for i in range(len(candidate_vertices_transformed)):
-            v = candidate_vertices_transformed[i] - candidate_center
-            v = R_rotate @ v
-            v = v + candidate_center + translation_vec
-            candidate_vertices_transformed[i] = v
-        
-        # 计算变换后的候选网格的轴
-        candidate_longitudinal_axis_transformed = longitudinal_axis.copy()
-        candidate_vertical_axis_transformed = R_rotate @ candidate_vertical_axis
-        candidate_vertical_axis_transformed = candidate_vertical_axis_transformed / np.linalg.norm(candidate_vertical_axis_transformed)
-        candidate_center_transformed = candidate_center + translation_vec
-        
-        candidate_lateral_axis_transformed = np.cross(candidate_longitudinal_axis_transformed, candidate_vertical_axis_transformed)
-        candidate_lateral_axis_transformed = candidate_lateral_axis_transformed / np.linalg.norm(candidate_lateral_axis_transformed)
-        
-        # 构建返回数据（与src/viz格式一致）
-        match_result = {
+    angle_rad = math.radians(optimal_rotation_angle_deg)
+    cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
+    K = np.array([
+        [0, -longitudinal_axis[2], longitudinal_axis[1]],
+        [longitudinal_axis[2], 0, -longitudinal_axis[0]],
+        [-longitudinal_axis[1], longitudinal_axis[0], 0]
+    ])
+    R_rotate = np.eye(3) + sin_a * K + (1 - cos_a) * np.dot(K, K)
+    translation_vec = longitudinal_axis * optimal_translation + candidate_lateral_axis * optimal_lateral_offset
+
+    candidate_vertices_transformed = (
+        (R_rotate @ (candidate_vertices - candidate_center).T).T
+        + candidate_center + translation_vec
+    )
+
+    candidate_longitudinal_axis_transformed = longitudinal_axis.copy()
+    candidate_vertical_axis_transformed = _normalize(R_rotate @ candidate_vertical_axis)
+    candidate_center_transformed = candidate_center + translation_vec
+    candidate_lateral_axis_transformed = _normalize(
+        np.cross(candidate_longitudinal_axis_transformed, candidate_vertical_axis_transformed))
+
+    # metadata: 除顶点/面以外的所有数据（轴、匹配结果、参数）
+    metadata = {
+        'match_result': {
             'volume': record_dict.get('volume', 0),
             'wrapping_ratio': record_dict.get('wrapping_ratio', 0),
             'target_wrapping_ratio': wrapping_threshold,
@@ -989,44 +1075,81 @@ def get_match_result_preview(record_id):
             'meets_direction_constraints': bool(record_dict.get('meets_direction_constraints', 0)),
             'optimization_algorithm': 'ga',
             'generation_history': result_data.get('generation_history', []),
-            'direction_alignment': result_data.get('direction_alignment', {})
-        }
-        
-        return jsonify({
-            'success': True,
-            'match_result': match_result,
-            'target_vertices': target_vertices_aligned.tolist(),
-            'target_faces': target_faces.tolist(),
-            'candidate_vertices': candidate_vertices.tolist(),
-            'candidate_faces': candidate_faces.tolist(),
-            'candidate_vertices_transformed': candidate_vertices_transformed.tolist(),
-            'longitudinal_axis': longitudinal_axis.tolist(),
-            'candidate_center': candidate_center.tolist(),
-            'axes': {
-                'target': {
-                    'center': target_center_aligned.tolist(),
-                    'longitudinal_axis': target_longitudinal_axis_aligned.tolist(),
-                    'vertical_axis': target_vertical_axis_aligned.tolist(),
-                    'lateral_axis': target_lateral_axis.tolist()
-                },
-                'candidate_original': {
-                    'center': candidate_center.tolist(),
-                    'longitudinal_axis': longitudinal_axis.tolist(),
-                    'vertical_axis': candidate_vertical_axis.tolist(),
-                    'lateral_axis': candidate_lateral_axis.tolist()
-                },
-                'candidate_transformed': {
-                    'center': candidate_center_transformed.tolist(),
-                    'longitudinal_axis': candidate_longitudinal_axis_transformed.tolist(),
-                    'vertical_axis': candidate_vertical_axis_transformed.tolist(),
-                    'lateral_axis': candidate_lateral_axis_transformed.tolist()
-                }
-            }
-        })
+            'direction_alignment': result_data.get('direction_alignment', {}),
+        },
+        'longitudinal_axis': longitudinal_axis.tolist(),
+        'candidate_center': candidate_center.tolist(),
+        'axes': {
+            'target': {
+                'center': target_center_aligned.tolist(),
+                'longitudinal_axis': target_longitudinal_axis_aligned.tolist(),
+                'vertical_axis': target_vertical_axis_aligned.tolist(),
+                'lateral_axis': target_lateral_axis.tolist(),
+            },
+            'candidate_original': {
+                'center': candidate_center.tolist(),
+                'longitudinal_axis': longitudinal_axis.tolist(),
+                'vertical_axis': candidate_vertical_axis.tolist(),
+                'lateral_axis': candidate_lateral_axis.tolist(),
+            },
+            'candidate_transformed': {
+                'center': candidate_center_transformed.tolist(),
+                'longitudinal_axis': candidate_longitudinal_axis_transformed.tolist(),
+                'vertical_axis': candidate_vertical_axis_transformed.tolist(),
+                'lateral_axis': candidate_lateral_axis_transformed.tolist(),
+            },
+        },
+    }
+
+    return pack_preview_binary(
+        target_vertices_aligned, target_faces,
+        candidate_vertices, candidate_faces,
+        metadata,
+    )
+
+
+@app.route('/api/match/result/<int:record_id>/preview', methods=['GET'])
+def get_match_result_preview(record_id):
+    """获取匹配结果的3D预览数据（二进制格式，带 LRU 缓存）"""
+    if not MATCHER_AVAILABLE or mesh_matcher is None:
+        return jsonify({'error': '匹配模块不可用，无法生成3D预览'}), 503
+
+    try:
+        # 尝试从缓存读取
+        cached = preview_cache.get(record_id)
+        if cached:
+            print(f'[preview cache] HIT  record_id={record_id} size={len(cached)} bytes')
+            return app.response_class(cached, mimetype='application/octet-stream')
+
+        # 缓存未命中：计算 + 缓存
+        print(f'[preview cache] MISS record_id={record_id}, computing...')
+        data = _compute_preview_data(record_id)
+        preview_cache.put(record_id, data)
+        print(f'[preview cache] STORED record_id={record_id} size={len(data)} bytes')
+        return app.response_class(data, mimetype='application/octet-stream')
+
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'加载预览失败: {str(e)}'}), 500
+
+@app.route('/api/match/record/<int:record_id>', methods=['DELETE'])
+def delete_match_record(record_id):
+    """删除匹配记录并清理预览缓存"""
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute('SELECT id FROM match_records WHERE id = ?', (record_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': '记录不存在'}), 404
+    c.execute('DELETE FROM match_records WHERE id = ?', (record_id,))
+    conn.commit()
+    conn.close()
+    preview_cache.delete(record_id)
+    return jsonify({'success': True})
+
 
 # 历史记录API
 @app.route('/api/history', methods=['GET'])
@@ -1330,6 +1453,17 @@ def execute_match(task_data):
                     record_id = c.lastrowid
                     conn.commit()
                     conn.close()
+
+                    # 异步预生成二进制预览缓存
+                    _rid = record_id
+                    def _precache(rid=_rid):
+                        try:
+                            data = _compute_preview_data(rid)
+                            preview_cache.put(rid, data)
+                            print(f'[preview cache] PRE-BUILT record_id={rid} size={len(data)} bytes')
+                        except Exception as ex:
+                            print(f'[preview cache] pre-build failed for record_id={rid}: {ex}')
+                    threading.Thread(target=_precache, daemon=True).start()
 
                 # 无论是否匹配成功，都加入结果列表
                 results.append({

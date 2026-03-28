@@ -72,10 +72,7 @@ class ResultDetailView {
         row.classList.add('active');
         this.showMatchDetail(overviewEl, r, task.shoeName);
         if (r.record_id) this.load3DPreview(r.record_id);
-        else {
-          document.getElementById('match-result-3d').innerHTML =
-            '<div class="viewer-placeholder">仅成功匹配的粗胚支持3D预览</div>';
-        }
+        else this._showNoPreview();
       });
       listEl.appendChild(row);
     });
@@ -86,10 +83,7 @@ class ResultDetailView {
       const first = allSorted[0];
       this.showMatchDetail(overviewEl, first, task.shoeName);
       if (first.record_id) this.load3DPreview(first.record_id);
-      else {
-        document.getElementById('match-result-3d').innerHTML =
-          '<div class="viewer-placeholder">仅成功匹配的粗胚支持3D预览</div>';
-      }
+      else this._showNoPreview();
     }
   }
 
@@ -181,36 +175,82 @@ class ResultDetailView {
       return;
     }
 
-    // 立即 dispose 旧 viewer 并显示加载状态
-    if (this._viewer) { this._viewer.dispose(); this._viewer = null; }
-    viewerContainer.innerHTML = '<div class="viewer-placeholder">加载3D预览中...</div>';
+    // 清除旧模型数据，但保留 Viewer3D 实例（复用 WebGL 上下文）
+    if (this._viewer) {
+      this._viewer.clear();
+    }
+
+    // 显示加载状态（叠加在 canvas 上方）
+    this._showLoading(viewerContainer, true);
 
     // 请求序号防止并发竞态
     const seq = ++this._loadSeq;
+    const t0 = performance.now();
 
     try {
       const data = await API.getMatchResultPreview(recordId);
+      const tApi = performance.now();
+      const tvLen = data.target_vertices ? (data._binary ? data.target_vertices.length / 3 : data.target_vertices.length) : 0;
+      const cvLen = data.candidate_vertices ? (data._binary ? data.candidate_vertices.length / 3 : data.candidate_vertices.length) : 0;
+      console.log(`[3D perf] API fetch: ${(tApi - t0).toFixed(1)}ms (binary=${!!data._binary}, vertices: target=${tvLen}, candidate=${cvLen})`);
 
       // 如果在等待期间用户又点了另一行，丢弃本次结果
       if (seq !== this._loadSeq) return;
 
-      // 清空 loading 占位
-      viewerContainer.innerHTML = '';
+      this._showLoading(viewerContainer, false);
 
       // 构建回放控制 UI
       this._injectReplayUI(data);
 
-      this._viewer = new Viewer3D('match-result-3d');
-      // 使用完整数据的 loadMatchResult（复刻 src/viz）
+      // 复用已有 viewer 或首次创建
+      const tViewer0 = performance.now();
+      const isReuse = !!this._viewer;
+      if (!this._viewer) {
+        // 清除占位文本（如"仅成功匹配的粗胚支持3D预览"），防止挤压 canvas
+        viewerContainer.innerHTML = '';
+        this._viewer = new Viewer3D('match-result-3d');
+      }
+      const tViewer1 = performance.now();
+      if (!isReuse) {
+        console.log(`[3D perf] Viewer3D init: ${(tViewer1 - tViewer0).toFixed(1)}ms`);
+      }
+
       this._viewer.loadMatchResult(data);
+      const tLoad = performance.now();
+      console.log(`[3D perf] loadMatchResult: ${(tLoad - tViewer1).toFixed(1)}ms`);
+      console.log(`[3D perf] total (excl outsidePoints): ${(tLoad - t0).toFixed(1)}ms`);
 
       // 绑定轴和外点显示控制
       this._bindViewerControls();
     } catch (error) {
       if (seq !== this._loadSeq) return;
+      this._showLoading(viewerContainer, false);
       console.error('加载3D预览失败:', error);
       viewerContainer.innerHTML = `<div class="viewer-placeholder">3D预览加载失败: ${this._esc(error.message)}</div>`;
+      this._viewer = null;
     }
+  }
+
+  static _showLoading(container, show) {
+    let overlay = container.querySelector('.viewer-loading-overlay');
+    if (show) {
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'viewer-loading-overlay';
+        overlay.innerHTML = '<span>加载3D预览中...</span>';
+        container.appendChild(overlay);
+      }
+    } else if (overlay) {
+      overlay.remove();
+    }
+  }
+
+  static _showNoPreview() {
+    if (this._viewer) { this._viewer.dispose(); this._viewer = null; }
+    document.getElementById('match-result-3d').innerHTML =
+      '<div class="viewer-placeholder">仅成功匹配的粗胚支持3D预览</div>';
+    const controlsEl = document.getElementById('viewer-controls');
+    if (controlsEl) controlsEl.innerHTML = '';
   }
 
   static _injectReplayUI(data) {

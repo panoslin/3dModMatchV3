@@ -42,7 +42,7 @@ class Viewer3D {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.container.appendChild(this.renderer.domElement);
 
     this.setupControls();
@@ -165,6 +165,11 @@ class Viewer3D {
   _clearMatchObjects() {
     this.stopReplay();
 
+    if (this._outsidePointsPending) {
+      cancelAnimationFrame(this._outsidePointsPending);
+      this._outsidePointsPending = null;
+    }
+
     if (this.targetMesh) {
       this.scene.remove(this.targetMesh);
       this.targetMesh.geometry.dispose();
@@ -285,6 +290,8 @@ class Viewer3D {
   // ─── 匹配结果加载（复刻 src/viz） ───
 
   loadMatchResult(data) {
+    const _t = { start: performance.now() };
+
     this._clearMatchObjects();
     this.meshes.forEach(mesh => {
       this.scene.remove(mesh);
@@ -292,10 +299,12 @@ class Viewer3D {
       if (mesh.material) mesh.material.dispose();
     });
     this.meshes = [];
+    _t.clear = performance.now();
 
     // 加载目标（鞋模）- 灰色不透明（与 src/viz 一致）
     const targetGeometry = this._buildGeometry(data.target_vertices, data.target_faces);
     if (!targetGeometry) return;
+    _t.targetGeom = performance.now();
 
     const targetMaterial = new THREE.MeshLambertMaterial({
       color: 0x808080,
@@ -312,6 +321,7 @@ class Viewer3D {
     // 加载候选（粗胚）- 蓝色半透明（与 src/viz 一致）
     const candidateGeometry = this._buildGeometry(data.candidate_vertices, data.candidate_faces);
     if (!candidateGeometry) return;
+    _t.candidateGeom = performance.now();
 
     const candidateMaterial = new THREE.MeshLambertMaterial({
       color: 0x4080FF,
@@ -327,6 +337,7 @@ class Viewer3D {
 
     // 设置 GA 回放（应用变换矩阵到鞋模）
     this.setupReplay(data);
+    _t.replay = performance.now();
 
     // 计算相机位置
     targetGeometry.computeBoundingBox();
@@ -363,9 +374,25 @@ class Viewer3D {
     if (data.axes) {
       this._visualizeAxes(data.axes, maxDim);
     }
+    _t.axes = performance.now();
 
-    // 可视化粗胚外的采样点
-    this._visualizeOutsidePoints(maxDim);
+    console.log(
+      `[3D perf] loadMatchResult breakdown — clear: ${(_t.clear - _t.start).toFixed(1)}ms, ` +
+      `targetGeom: ${(_t.targetGeom - _t.clear).toFixed(1)}ms, ` +
+      `candidateGeom: ${(_t.candidateGeom - _t.targetGeom).toFixed(1)}ms, ` +
+      `replay: ${(_t.replay - _t.candidateGeom).toFixed(1)}ms, ` +
+      `axes: ${(_t.axes - _t.replay).toFixed(1)}ms, ` +
+      `sync total: ${(_t.axes - _t.start).toFixed(1)}ms`
+    );
+
+    // 延迟计算外点，先让模型和轴立即渲染出来
+    this._outsidePointsPending = requestAnimationFrame(() => {
+      this._outsidePointsPending = null;
+      const t0 = performance.now();
+      this._visualizeOutsidePoints(maxDim);
+      const t1 = performance.now();
+      console.log(`[3D perf] outsidePoints (deferred): ${(t1 - t0).toFixed(1)}ms`);
+    });
   }
 
   // ─── GA 回放 ───
@@ -639,11 +666,16 @@ class Viewer3D {
     const vertexCount = positionAttr.count;
     if (vertexCount === 0) return;
 
-    const maxSamples = 500;
+    // 为 candidateMesh 计算 BVH 加速结构（首次 raycast 前）
+    this.candidateMesh.geometry.computeBoundingBox();
+    this.candidateMesh.geometry.computeBoundingSphere();
+
+    const maxSamples = 200;
     const step = Math.max(1, Math.floor(vertexCount / maxSamples));
 
     const raycaster = new THREE.Raycaster();
-    const rayDir = new THREE.Vector3(1, 0, 0).normalize();
+    raycaster.firstHitOnly = false;
+    const rayDir = new THREE.Vector3(1, 0, 0);
     const outsidePositions = [];
     const local = new THREE.Vector3();
     const worldPoint = new THREE.Vector3();
@@ -655,7 +687,7 @@ class Viewer3D {
 
       const origin = worldPoint.clone().addScaledVector(rayDir, 1e-4);
       raycaster.set(origin, rayDir);
-      const intersects = raycaster.intersectObject(this.candidateMesh, true);
+      const intersects = raycaster.intersectObject(this.candidateMesh, false);
       const isInside = (intersects.length % 2 === 1);
 
       if (!isInside) {
@@ -694,10 +726,11 @@ class Viewer3D {
   _buildGeometry(vertices, faces) {
     if (!vertices || vertices.length === 0) return null;
     const geometry = new THREE.BufferGeometry();
-    const vArray = new Float32Array(vertices.flat());
+    // 支持 TypedArray（二进制格式）和嵌套数组（旧 JSON 格式）
+    const vArray = (vertices instanceof Float32Array) ? vertices : new Float32Array(vertices.flat());
     geometry.setAttribute('position', new THREE.BufferAttribute(vArray, 3));
     if (faces && faces.length > 0) {
-      const iArray = new Uint32Array(faces.flat());
+      const iArray = (faces instanceof Uint32Array) ? faces : new Uint32Array(faces.flat());
       geometry.setIndex(new THREE.BufferAttribute(iArray, 1));
     }
     geometry.computeVertexNormals();
