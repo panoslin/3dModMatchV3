@@ -7,6 +7,8 @@ class BlankManager {
     this.categories = [];
     this.viewer = null;
     this.activeSidebarCategoryId = null; // null = 全部
+    this._activeBlankId = null;
+    this._previewSeq = 0;
 
     this.init();
   }
@@ -26,6 +28,11 @@ class BlankManager {
     // 分类管理按钮
     document.getElementById('manage-categories-btn').addEventListener('click', () => {
       this.showCategoryManagement();
+    });
+
+    // 快捷新建分类
+    document.getElementById('add-category-inline-btn').addEventListener('click', () => {
+      this.showCreateCategoryDialog();
     });
 
     // 搜索
@@ -52,20 +59,14 @@ class BlankManager {
       this.batchDelete();
     });
 
-    // 预览模态框关闭
-    document.getElementById('blank-preview-close').addEventListener('click', () => {
-      document.getElementById('blank-preview-modal').classList.remove('active');
-      document.getElementById('blank-preview-info').innerHTML = '';
-      if (this.viewer) {
-        this.viewer.dispose();
-        this.viewer = null;
-      }
-    });
   }
 
   async loadCategories() {
     try {
-      this.categories = await API.getCategories();
+      const resp = await API.getCategories();
+      this.categories = resp.categories || resp;
+      this._totalBlanks = resp.total_blanks || 0;
+      this._uncategorizedCount = resp.uncategorized_count || 0;
       this.renderCategorySidebar();
     } catch (error) {
       console.error('加载分类失败:', error);
@@ -77,10 +78,17 @@ class BlankManager {
     if (!container) return;
     container.innerHTML = '';
 
-    // 全部 item
+    // Compute subtree counts (own + descendants)
+    const countMap = new Map();
+    this.categories.forEach(cat => countMap.set(cat.id, cat.blank_count || 0));
+
+    // "全部" item
     const allItem = document.createElement('div');
     allItem.className = 'sidebar-cat-item' + (this.activeSidebarCategoryId === null ? ' active' : '');
-    allItem.innerHTML = `<span class="sidebar-cat-label">全部粗胚</span>`;
+    allItem.innerHTML = `
+      <span class="sidebar-cat-label">全部粗胚</span>
+      <span class="sidebar-cat-count">${this._totalBlanks || 0}</span>
+    `;
     allItem.addEventListener('click', () => {
       this.activeSidebarCategoryId = null;
       this.currentPage = 1;
@@ -88,6 +96,23 @@ class BlankManager {
       this.renderCategorySidebar();
     });
     container.appendChild(allItem);
+
+    // "未分类" item (only show if there are uncategorized blanks)
+    if (this._uncategorizedCount > 0) {
+      const uncatItem = document.createElement('div');
+      uncatItem.className = 'sidebar-cat-item' + (this.activeSidebarCategoryId === 'uncategorized' ? ' active' : '');
+      uncatItem.innerHTML = `
+        <span class="sidebar-cat-label sidebar-cat-label-muted">未分类</span>
+        <span class="sidebar-cat-count">${this._uncategorizedCount}</span>
+      `;
+      uncatItem.addEventListener('click', () => {
+        this.activeSidebarCategoryId = 'uncategorized';
+        this.currentPage = 1;
+        this.loadBlanks();
+        this.renderCategorySidebar();
+      });
+      container.appendChild(uncatItem);
+    }
 
     if (this.categories.length === 0) return;
 
@@ -104,6 +129,17 @@ class BlankManager {
       }
     });
 
+    // Accumulate subtree counts (bottom-up)
+    const subtreeCount = (node) => {
+      let total = countMap.get(node.id) || 0;
+      if (node.children) {
+        node.children.forEach(child => { total += subtreeCount(child); });
+      }
+      node._subtreeCount = total;
+      return total;
+    };
+    roots.forEach(root => subtreeCount(root));
+
     const renderNode = (node, level) => {
       const hasChildren = node.children && node.children.length > 0;
       const isActive = this.activeSidebarCategoryId === node.id;
@@ -113,13 +149,18 @@ class BlankManager {
       item.className = 'sidebar-cat-item' + (isActive ? ' active' : '');
       item.style.paddingLeft = `${12 + level * 16}px`;
 
+      const ownCount = countMap.get(node.id) || 0;
+      const displayCount = hasChildren ? node._subtreeCount : ownCount;
+
       item.innerHTML = `
         <button class="sidebar-cat-toggle ${hasChildren && !isExpanded ? 'collapsed' : ''}" style="${hasChildren ? '' : 'visibility:hidden'}">▾</button>
         <span class="sidebar-cat-label" title="${this.escapeHtml(node.path || node.name)}">${this.escapeHtml(node.name)}</span>
+        <span class="sidebar-cat-count">${displayCount}</span>
+        <button class="sidebar-cat-action" title="删除分类">×</button>
       `;
 
       const toggle = item.querySelector('.sidebar-cat-toggle');
-      const label = item.querySelector('.sidebar-cat-label');
+      const deleteBtn = item.querySelector('.sidebar-cat-action');
 
       if (hasChildren) {
         toggle.addEventListener('click', (e) => {
@@ -134,20 +175,27 @@ class BlankManager {
         });
       }
 
-      label.addEventListener('click', () => {
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`确定要删除分类"${node.name}"吗？`)) return;
+        try {
+          await API.deleteCategory(node.id);
+          if (this.activeSidebarCategoryId === node.id) {
+            this.activeSidebarCategoryId = null;
+          }
+          await this.loadCategories();
+          await this.loadBlanks();
+        } catch (error) {
+          alert('删除失败: ' + error.message);
+        }
+      });
+
+      item.addEventListener('click', (e) => {
+        if (e.target === toggle || e.target === deleteBtn) return;
         this.activeSidebarCategoryId = node.id;
         this.currentPage = 1;
         this.loadBlanks();
         this.renderCategorySidebar();
-      });
-
-      item.addEventListener('click', (e) => {
-        if (e.target !== toggle) {
-          this.activeSidebarCategoryId = node.id;
-          this.currentPage = 1;
-          this.loadBlanks();
-          this.renderCategorySidebar();
-        }
       });
 
       container.appendChild(item);
@@ -165,14 +213,13 @@ class BlankManager {
     const categoryId = this.activeSidebarCategoryId;
     const sort = document.getElementById('blank-sort').value;
 
+    const params = { search, sort, page: this.currentPage, per_page: this.perPage };
+    if (categoryId !== null) {
+      params.category_id = categoryId;
+    }
+
     try {
-      const data = await API.getBlanks({
-        search,
-        category_id: categoryId,
-        sort,
-        page: this.currentPage,
-        per_page: this.perPage,
-      });
+      const data = await API.getBlanks(params);
 
       this.renderBlanks(data.items);
       this.renderPagination(data.total, 'blank-pagination');
@@ -183,42 +230,39 @@ class BlankManager {
   }
 
   renderBlanks(blanks) {
-    const grid = document.getElementById('blank-grid');
-    grid.innerHTML = '';
+    const list = document.getElementById('blank-list');
+    list.innerHTML = '';
 
     blanks.forEach(blank => {
-      const card = document.createElement('div');
-      card.className = 'blank-card';
-      card.dataset.id = blank.id;
+      const row = document.createElement('div');
+      row.className = 'blank-list-row';
+      row.dataset.id = blank.id;
 
       const isSelected = this.selectedBlanks.has(blank.id);
-      if (isSelected) {
-        card.classList.add('selected');
-      }
+      if (isSelected) row.classList.add('selected');
+      if (this._activeBlankId === blank.id) row.classList.add('active');
 
-      card.innerHTML = `
-        <input type="checkbox" class="blank-card-checkbox" ${isSelected ? 'checked' : ''}>
-        <div class="blank-card-preview">📦</div>
-        <div class="blank-card-name">${this.escapeHtml(blank.name)}</div>
-        <div class="blank-card-info">${this.formatFileSize(blank.file_size)}</div>
-        <div class="blank-card-info">${this.formatDate(blank.upload_time)}</div>
-        ${blank.category_name ? `<div class="blank-card-category">${this.escapeHtml(blank.category_name)}</div>` : ''}
+      row.innerHTML = `
+        <input type="checkbox" class="blank-list-checkbox" ${isSelected ? 'checked' : ''}>
+        <span class="blank-list-name" title="${this.escapeHtml(blank.name)}">${this.escapeHtml(blank.name)}</span>
+        ${blank.category_name ? `<span class="blank-list-category">${this.escapeHtml(blank.category_name)}</span>` : ''}
+        <span class="blank-list-size">${this.formatFileSize(blank.file_size)}</span>
+        <span class="blank-list-date">${this.formatDate(blank.upload_time)}</span>
       `;
 
-      // 点击事件
-      const checkbox = card.querySelector('.blank-card-checkbox');
+      const checkbox = row.querySelector('.blank-list-checkbox');
       checkbox.addEventListener('change', (e) => {
         e.stopPropagation();
         this.toggleSelect(blank.id);
       });
 
-      card.addEventListener('click', (e) => {
+      row.addEventListener('click', (e) => {
         if (e.target !== checkbox) {
           this.previewBlank(blank.id, blank);
         }
       });
 
-      grid.appendChild(card);
+      list.appendChild(row);
     });
 
     this.updateBatchActions();
@@ -373,68 +417,69 @@ class BlankManager {
   }
 
   async previewBlank(blankId, blankData) {
-    const modal = document.getElementById('blank-preview-modal');
-    modal.classList.add('active');
+    // Update active row highlight
+    this._activeBlankId = blankId;
+    document.querySelectorAll('.blank-list-row').forEach(row => {
+      row.classList.toggle('active', row.dataset.id === String(blankId));
+    });
 
-    // Show blank name in header immediately
-    const titleEl = document.getElementById('blank-preview-title');
-    const subtitleEl = document.getElementById('blank-preview-subtitle');
-    if (blankData) {
-      titleEl.textContent = blankData.name || '粗胚预览';
-      subtitleEl.textContent = blankData.category_name ? `分类: ${blankData.category_name}` : '';
-    } else {
-      titleEl.textContent = '粗胚预览';
-      subtitleEl.textContent = '';
-    }
-
-    // Render static info immediately (before 3D loads)
+    const placeholder = document.getElementById('blank-preview-placeholder');
+    const viewerWrap = document.getElementById('blank-preview-viewer');
     const infoEl = document.getElementById('blank-preview-info');
-    infoEl.innerHTML = '<div style="color:#999;font-size:13px;">加载中...</div>';
+
+    // Show viewer panel, hide placeholder
+    placeholder.style.display = 'none';
+    viewerWrap.style.display = 'flex';
+
+    // Show info immediately
+    infoEl.innerHTML = '<div style="color:#999;font-size:13px;">加载3D模型中...</div>';
+
+    // Race condition guard
+    const seq = ++this._previewSeq;
 
     try {
       const data = await API.getBlankPreview(blankId);
+      if (seq !== this._previewSeq) return; // stale
 
       // Render info panel
-      if (blankData || data.stats) {
-        const stats = data.stats || {};
-        const bounds = stats.bounds || {};
-        const sizeX = bounds.x ? (bounds.x[1] - bounds.x[0]).toFixed(1) : '—';
-        const sizeY = bounds.y ? (bounds.y[1] - bounds.y[0]).toFixed(1) : '—';
-        const sizeZ = bounds.z ? (bounds.z[1] - bounds.z[0]).toFixed(1) : '—';
+      const stats = data.stats || {};
+      const bounds = stats.bounds || {};
+      const sizeX = bounds.x ? (bounds.x[1] - bounds.x[0]).toFixed(1) : '—';
+      const sizeY = bounds.y ? (bounds.y[1] - bounds.y[0]).toFixed(1) : '—';
+      const sizeZ = bounds.z ? (bounds.z[1] - bounds.z[0]).toFixed(1) : '—';
 
-        infoEl.innerHTML = `
-          <div class="result-details-content">
-            <h3>模型信息</h3>
-            ${blankData ? `
-            <div class="result-metric"><label>名称:</label><span>${this.escapeHtml(blankData.name || '')}</span></div>
-            <div class="result-metric"><label>文件大小:</label><span>${this.formatFileSize(blankData.file_size)}</span></div>
-            <div class="result-metric"><label>上传时间:</label><span>${this.formatDate(blankData.upload_time)}</span></div>
-            ${blankData.category_name ? `<div class="result-metric"><label>分类:</label><span>${this.escapeHtml(blankData.category_name)}</span></div>` : ''}
-            ` : ''}
-            ${stats.vertex_count !== undefined ? `
-            <div class="result-metric"><label>顶点数:</label><span>${stats.vertex_count.toLocaleString()}</span></div>
-            <div class="result-metric"><label>面数:</label><span>${stats.face_count.toLocaleString()}</span></div>
-            ` : ''}
-            ${bounds.x ? `
-            <h3 style="margin-top:16px;">边界尺寸</h3>
-            <div class="result-metric"><label>X 宽度:</label><span>${sizeX} mm</span></div>
-            <div class="result-metric"><label>Y 深度:</label><span>${sizeY} mm</span></div>
-            <div class="result-metric"><label>Z 高度:</label><span>${sizeZ} mm</span></div>
-            ` : ''}
-          </div>
-        `;
-      } else {
-        infoEl.innerHTML = '';
-      }
+      infoEl.innerHTML = `
+        <div class="result-details-content">
+          <h3>模型信息</h3>
+          ${blankData ? `
+          <div class="result-metric"><label>名称:</label><span>${this.escapeHtml(blankData.name || '')}</span></div>
+          <div class="result-metric"><label>文件大小:</label><span>${this.formatFileSize(blankData.file_size)}</span></div>
+          <div class="result-metric"><label>上传时间:</label><span>${this.formatDate(blankData.upload_time)}</span></div>
+          ${blankData.category_name ? `<div class="result-metric"><label>分类:</label><span>${this.escapeHtml(blankData.category_name)}</span></div>` : ''}
+          ` : ''}
+          ${stats.vertex_count !== undefined ? `
+          <div class="result-metric"><label>顶点数:</label><span>${stats.vertex_count.toLocaleString()}</span></div>
+          <div class="result-metric"><label>面数:</label><span>${stats.face_count.toLocaleString()}</span></div>
+          ` : ''}
+          ${bounds.x ? `
+          <h3 style="margin-top:16px;">边界尺寸</h3>
+          <div class="result-metric"><label>X 宽度:</label><span>${sizeX} mm</span></div>
+          <div class="result-metric"><label>Y 深度:</label><span>${sizeY} mm</span></div>
+          <div class="result-metric"><label>Z 高度:</label><span>${sizeZ} mm</span></div>
+          ` : ''}
+        </div>
+      `;
 
-      // Init 3D viewer
+      // Reuse or create 3D viewer
       if (this.viewer) {
-        this.viewer.dispose();
-        this.viewer = null;
+        this.viewer.clear();
+      } else {
+        document.getElementById('blank-preview-3d').innerHTML = '';
+        this.viewer = new Viewer3D('blank-preview-3d');
       }
-      this.viewer = new Viewer3D('blank-preview-3d');
       this.viewer.loadMesh(data.vertices, data.faces, { color: 0x007AFF, opacity: 0.8 });
     } catch (error) {
+      if (seq !== this._previewSeq) return;
       console.error('加载预览失败:', error);
       infoEl.innerHTML = `<div class="task-error">加载失败: ${this.escapeHtml(error.message)}</div>`;
     }
@@ -528,61 +573,60 @@ class BlankManager {
     
     // 渲染树
     const renderCategory = (category, level = 0) => {
-      const item = document.createElement('div');
-      item.className = 'category-tree-item';
-      item.style.paddingLeft = `${level * 20}px`;
-      item.style.marginBottom = '8px';
-      item.style.display = 'flex';
-      item.style.alignItems = 'center';
-      item.style.justifyContent = 'space-between';
-      
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = category.path || category.name;
-      nameSpan.style.flex = '1';
-      
+      const row = document.createElement('div');
+      row.className = 'cat-tree-row';
+      row.style.paddingLeft = `${12 + level * 24}px`;
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'cat-tree-row-name';
+      nameEl.textContent = category.name;
+      if (level > 0 && category.path) {
+        const pathEl = document.createElement('span');
+        pathEl.className = 'cat-tree-row-path';
+        pathEl.textContent = `(${category.path})`;
+        nameEl.appendChild(pathEl);
+      }
+
+      const countEl = document.createElement('span');
+      countEl.className = 'cat-tree-row-count';
+      countEl.textContent = `${category.blank_count || 0} 个粗胚`;
+
       const actions = document.createElement('div');
-      actions.style.display = 'flex';
-      actions.style.gap = '8px';
-      
+      actions.className = 'cat-tree-row-actions';
+
       const deleteBtn = document.createElement('button');
-      deleteBtn.className = 'btn-secondary';
+      deleteBtn.className = 'cat-tree-row-btn danger';
       deleteBtn.textContent = '删除';
-      deleteBtn.style.fontSize = '12px';
-      deleteBtn.style.padding = '4px 8px';
       deleteBtn.onclick = async () => {
-        if (confirm(`确定要删除分类"${category.name}"吗？`)) {
-          try {
-            await API.deleteCategory(category.id);
-            if (this.activeSidebarCategoryId === category.id) {
-              this.activeSidebarCategoryId = null;
-            }
-            await this.loadCategories();
-            await this.renderCategoryTree();
-            await this.loadBlanks();
-            alert('删除成功');
-          } catch (error) {
-            alert('删除失败: ' + error.message);
+        if (!confirm(`确定要删除分类"${category.name}"吗？`)) return;
+        try {
+          await API.deleteCategory(category.id);
+          if (this.activeSidebarCategoryId === category.id) {
+            this.activeSidebarCategoryId = null;
           }
+          await this.loadCategories();
+          await this.renderCategoryTree();
+          await this.loadBlanks();
+        } catch (error) {
+          alert('删除失败: ' + error.message);
         }
       };
-      
+
       actions.appendChild(deleteBtn);
-      item.appendChild(nameSpan);
-      item.appendChild(actions);
-      treeContainer.appendChild(item);
-      
-      // 渲染子分类
+      row.appendChild(nameEl);
+      row.appendChild(countEl);
+      row.appendChild(actions);
+      treeContainer.appendChild(row);
+
       if (category.children && category.children.length > 0) {
-        category.children.forEach(child => {
-          renderCategory(child, level + 1);
-        });
+        category.children.forEach(child => renderCategory(child, level + 1));
       }
     };
-    
+
     rootCategories.forEach(cat => renderCategory(cat));
-    
+
     if (rootCategories.length === 0) {
-      treeContainer.innerHTML = '<div style="text-align: center; color: #999; padding: 20px;">暂无分类，点击"新建分类"创建</div>';
+      treeContainer.innerHTML = '<div class="cat-tree-empty">暂无分类，点击上方「新建分类」创建</div>';
     }
   }
 

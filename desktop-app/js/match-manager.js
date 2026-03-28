@@ -81,7 +81,8 @@ class MatchManager {
   // ── Categories ──────────────────────────────────────────────────────────────
   async loadCategories() {
     try {
-      const categories = await API.getCategories();
+      const resp = await API.getCategories();
+      const categories = resp.categories || resp;
       this.renderCategoryTree(categories);
     } catch (error) {
       console.error('加载分类失败:', error);

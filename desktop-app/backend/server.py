@@ -465,16 +465,35 @@ def handle_preflight():
 # 分类管理API
 @app.route('/api/categories', methods=['GET', 'OPTIONS'])
 def get_categories():
-    """获取所有分类"""
+    """获取所有分类（含每个分类的粗胚数量）"""
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
-    c.execute('SELECT * FROM categories ORDER BY path')
+
+    c.execute('''
+        SELECT c.*, COALESCE(cnt.blank_count, 0) AS blank_count
+        FROM categories c
+        LEFT JOIN (
+            SELECT category_id, COUNT(*) AS blank_count
+            FROM blanks
+            GROUP BY category_id
+        ) cnt ON cnt.category_id = c.id
+        ORDER BY c.path
+    ''')
     categories = [dict(row) for row in c.fetchall()]
-    
+
+    # Also return total blank count (including uncategorized)
+    c.execute('SELECT COUNT(*) FROM blanks')
+    total_blanks = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM blanks WHERE category_id IS NULL')
+    uncategorized_count = c.fetchone()[0]
+
     conn.close()
-    return jsonify(categories)
+    return jsonify({
+        'categories': categories,
+        'total_blanks': total_blanks,
+        'uncategorized_count': uncategorized_count,
+    })
 
 @app.route('/api/categories', methods=['POST'])
 def create_category():
@@ -544,10 +563,12 @@ def get_blanks():
         query += ' AND b.name LIKE ?'
         params.append(f'%{search}%')
     
-    if category_id:
+    if category_id == 'uncategorized':
+        query += ' AND b.category_id IS NULL'
+    elif category_id:
         query += ' AND b.category_id = ?'
         params.append(category_id)
-    
+
     # 排序
     if sort == 'time-desc':
         query += ' ORDER BY b.upload_time DESC'
@@ -555,22 +576,24 @@ def get_blanks():
         query += ' ORDER BY b.upload_time ASC'
     elif sort == 'name-asc':
         query += ' ORDER BY b.name ASC'
-    
+
     # 分页
     offset = (page - 1) * per_page
     query += ' LIMIT ? OFFSET ?'
     params.extend([per_page, offset])
-    
+
     c.execute(query, params)
     blanks = [dict(row) for row in c.fetchall()]
-    
+
     # 总数
     count_query = 'SELECT COUNT(*) FROM blanks b WHERE 1=1'
     count_params = []
     if search:
         count_query += ' AND b.name LIKE ?'
         count_params.append(f'%{search}%')
-    if category_id:
+    if category_id == 'uncategorized':
+        count_query += ' AND b.category_id IS NULL'
+    elif category_id:
         count_query += ' AND b.category_id = ?'
         count_params.append(category_id)
     
