@@ -34,6 +34,11 @@ function setupPageNavigation() {
       pages.forEach(p => p.classList.remove('active'));
       document.getElementById(`${targetPage}-page`).classList.add('active');
 
+      // 切换到匹配页面：刷新分类（粗胚管理中可能新增了分类）
+      if (targetPage === 'match' && matchManager) {
+        matchManager.loadCategories();
+      }
+
       // 历史记录页面：自动刷新控制
       if (targetPage === 'history' && historyManager) {
         historyManager.startAutoRefresh();
