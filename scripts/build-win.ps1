@@ -120,10 +120,15 @@ if ($LASTEXITCODE -ne 0) { Fail "C++ build failed (see output above)" }
 Remove-Item $BuildBat
 
 # Verify output — pybind11 names it mesh_matcher.cpython-3XX-win_amd64.pyd
-# MSVC may place the output in a Release/ subdirectory; search recursively and move it up
-$PydFile = Get-ChildItem $SrcBiz -Filter "mesh_matcher*.pyd" -Recurse | Select-Object -First 1
-if (-not $PydFile) { Fail "mesh_matcher.pyd not found in $SrcBiz after build" }
-# If it landed in a subdirectory (e.g. Release/), move it to $SrcBiz root
+# CMakeLists.txt should place it in src/biz directly, but MSVC may still land it
+# in build/Release/ — search both locations.
+$PydFile = Get-ChildItem $SrcBiz -Filter "mesh_matcher*.pyd" -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $PydFile) {
+    # Fallback: search the build tree
+    $PydFile = Get-ChildItem $BuildDir -Filter "mesh_matcher*.pyd" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $PydFile) { Fail "mesh_matcher.pyd not found in $SrcBiz or $BuildDir after build" }
+# If it landed outside $SrcBiz, move it there
 if ($PydFile.DirectoryName -ne $SrcBiz) {
     $dest = Join-Path $SrcBiz $PydFile.Name
     Move-Item $PydFile.FullName $dest -Force
@@ -141,7 +146,7 @@ if ($LASTEXITCODE -ne 0) { Fail "Module import smoke-test failed" }
 Info "Creating bundled venv..."
 
 if (Test-Path $VenvDir) { Remove-Item -Recurse -Force $VenvDir }
-& $Python -m venv $VenvDir
+& $Python -m venv --copies $VenvDir
 if ($LASTEXITCODE -ne 0) { Fail "venv creation failed" }
 
 $VenvPy = Join-Path $VenvDir "Scripts\python.exe"
@@ -157,7 +162,45 @@ New-Item -ItemType Directory -Force -Path $DllDest | Out-Null
 # Copy python3X.dll and any vc_redist DLLs from the Python install
 Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $DllDest -Force
 Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $DllDest -Force
+# Also copy DLLs from the system Python DLLs directory (sqlite3, ssl, etc.)
+$SysDlls = Join-Path $PythonDir "DLLs"
+if (Test-Path $SysDlls) {
+    Get-ChildItem $SysDlls -Filter "*.pyd" | Copy-Item -Destination $DllDest -Force
+    Get-ChildItem $SysDlls -Filter "*.dll" | Copy-Item -Destination $DllDest -Force
+    Info "Copied system Python DLLs to venv\DLLs\"
+}
 Info "Copied Python DLLs to venv\DLLs\"
+
+# Bundle stdlib into the venv for portability (end-user may not have Python installed)
+$PyVer = & $Python -c "import sys; print(f'python{sys.version_info.major}{sys.version_info.minor}')"
+$SysLib = Join-Path $PythonDir "Lib"
+$VenvLib = Join-Path $VenvDir "Lib"
+if (Test-Path $SysLib) {
+    Info "Copying stdlib into venv\Lib\ ..."
+    # Copy stdlib .py files (excluding site-packages, test, tkinter to save space)
+    $excludeDirs = @("site-packages", "test", "tests", "tkinter", "turtledemo", "idlelib", "__pycache__")
+    Get-ChildItem $SysLib -Recurse | Where-Object {
+        $relPath = $_.FullName.Substring($SysLib.Length + 1)
+        $skip = $false
+        foreach ($ex in $excludeDirs) {
+            if ($relPath -like "$ex\*" -or $relPath -eq $ex) { $skip = $true; break }
+        }
+        -not $skip
+    } | ForEach-Object {
+        $relPath = $_.FullName.Substring($SysLib.Length + 1)
+        $destPath = Join-Path $VenvLib $relPath
+        if ($_.PSIsContainer) {
+            New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+        } else {
+            $destDir = Split-Path $destPath
+            if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+            Copy-Item $_.FullName $destPath -Force
+        }
+    }
+    Info "Stdlib copied to venv\Lib\"
+} else {
+    Warn "Could not find stdlib at $SysLib — app may not be portable"
+}
 
 # ── 6. Node dependencies ──────────────────────────────────────────────────────
 Info "Installing Node.js dependencies..."

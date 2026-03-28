@@ -62,8 +62,14 @@ pybind11_add_module(mesh_matcher ${SOURCES})
 target_include_directories(mesh_matcher PRIVATE ${EIGEN3_INCLUDE_DIR})
 
 # Set output directory — let pybind11 set PREFIX/SUFFIX automatically
+# LIBRARY_OUTPUT_DIRECTORY covers .so (Linux/macOS);
+# RUNTIME_OUTPUT_DIRECTORY covers .pyd (Windows, treated as DLL/runtime).
+# Per-config variants (_RELEASE etc.) prevent MSVC from appending Release/ subfolder.
 set_target_properties(mesh_matcher PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../biz"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/../biz"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../biz"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/../biz"
 )
 
 # Find OpenMP

@@ -94,14 +94,24 @@ function startBackend() {
       PYTHONPATH: pythonPathEnv
     };
     
-    // 如果使用虚拟环境，添加 site-packages 到 PYTHONPATH
-    // 注意：不设置 PYTHONHOME —— venv 通过 pyvenv.cfg 定位基础 Python 的 stdlib，
-    // 设置 PYTHONHOME 会使 Python 在 venv 中找不到 encodings 等标准库模块
+    // 如果使用虚拟环境，配置 Python 环境变量
     if (pythonPath.includes('venv')) {
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
-      // 确保清除任何可能继承的 PYTHONHOME
-      delete env.PYTHONHOME;
       console.log('使用虚拟环境:', venvRoot);
+
+      // macOS: stdlib is bundled under venv/lib/pythonX.Y/ and the binary's
+      //        dylib reference is patched — pyvenv.cfg handles resolution.
+      //        Setting PYTHONHOME breaks it, so we clear it.
+      // Windows: stdlib is bundled under venv/Lib/ by the build script.
+      //          The copied python.exe needs PYTHONHOME to find Lib/.
+      if (isWin) {
+        env.PYTHONHOME = venvRoot;
+        console.log('设置 PYTHONHOME:', venvRoot);
+      } else {
+        delete env.PYTHONHOME;
+      }
+
+      // Add site-packages to PYTHONPATH
       // macOS/Linux: venv/lib/pythonX.Y/site-packages
       // Windows:     venv/Lib/site-packages
       let sitePackagesPath = null;
@@ -186,7 +196,15 @@ function startBackend() {
 // 停止后端服务
 function stopBackend() {
   if (backendProcess) {
-    backendProcess.kill();
+    if (process.platform === 'win32') {
+      // On Windows, child.kill() sends SIGTERM which Python ignores.
+      // Use taskkill to forcefully terminate the process tree.
+      try {
+        execSync(`taskkill /pid ${backendProcess.pid} /T /F`, { stdio: 'ignore' });
+      } catch (_) { /* already exited */ }
+    } else {
+      backendProcess.kill();
+    }
     backendProcess = null;
   }
 }

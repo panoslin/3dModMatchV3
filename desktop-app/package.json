@@ -59,7 +59,7 @@
           "**/lib/python*/**/*",
           "**/Scripts/python*",
           "**/Scripts/activate*",
-          "**/Lib/site-packages/**/*",
+          "**/Lib/**/*",
           "**/DLLs/**/*"
         ]
       },

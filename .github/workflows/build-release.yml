@@ -55,7 +55,12 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Ensure CMake is available
+        shell: pwsh
+        run: cmake --version
+
       - name: Build Windows app
+        shell: pwsh
         run: scripts\build-win.ps1
 
       - uses: actions/upload-artifact@v4
