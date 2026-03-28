@@ -2,6 +2,7 @@
 // 被 MatchManager 和 HistoryManager 共同使用
 class ResultDetailView {
   static _viewer = null;
+  static _loadSeq = 0;
 
   static _esc(text) {
     if (!text && text !== 0) return '';
@@ -180,18 +181,101 @@ class ResultDetailView {
       return;
     }
 
+    // 立即 dispose 旧 viewer 并显示加载状态
+    if (this._viewer) { this._viewer.dispose(); this._viewer = null; }
+    viewerContainer.innerHTML = '<div class="viewer-placeholder">加载3D预览中...</div>';
+
+    // 请求序号防止并发竞态
+    const seq = ++this._loadSeq;
+
     try {
       const data = await API.getMatchResultPreview(recordId);
-      if (this._viewer) { this._viewer.dispose(); this._viewer = null; }
+
+      // 如果在等待期间用户又点了另一行，丢弃本次结果
+      if (seq !== this._loadSeq) return;
+
+      // 清空 loading 占位
+      viewerContainer.innerHTML = '';
+
+      // 构建回放控制 UI
+      this._injectReplayUI(data);
+
       this._viewer = new Viewer3D('match-result-3d');
-      this._viewer.loadMatchResult(
-        { vertices: data.target_vertices, faces: data.target_faces },
-        { vertices: data.candidate_vertices, faces: data.candidate_faces },
-        { vertices: data.candidate_vertices_transformed, faces: data.candidate_faces }
-      );
+      // 使用完整数据的 loadMatchResult（复刻 src/viz）
+      this._viewer.loadMatchResult(data);
+
+      // 绑定轴和外点显示控制
+      this._bindViewerControls();
     } catch (error) {
+      if (seq !== this._loadSeq) return;
       console.error('加载3D预览失败:', error);
       viewerContainer.innerHTML = `<div class="viewer-placeholder">3D预览加载失败: ${this._esc(error.message)}</div>`;
+    }
+  }
+
+  static _injectReplayUI(data) {
+    const hasReplay = data.match_result &&
+      data.match_result.generation_history &&
+      data.match_result.generation_history.length > 0;
+    const maxGen = hasReplay ? data.match_result.generation_history.length - 1 : 0;
+
+    // 注入回放控制到 viewer-controls 区域
+    const controlsEl = document.getElementById('viewer-controls');
+    if (controlsEl) {
+      controlsEl.innerHTML = `
+        <div class="viewer-axis-controls">
+          <h4>坐标轴与外点显示</h4>
+          <label class="viewer-control-label">
+            <input type="checkbox" id="showTargetAxis" checked>
+            <span>鞋模坐标轴 (红/绿/蓝)</span>
+          </label>
+          <label class="viewer-control-label">
+            <input type="checkbox" id="showCandidateAxis" checked>
+            <span>粗胚坐标轴 (浅红/浅绿/浅蓝)</span>
+          </label>
+          <label class="viewer-control-label">
+            <input type="checkbox" id="showOutsidePoints" checked>
+            <span>粗胚外采样点 (洋红色)</span>
+          </label>
+        </div>
+        ${hasReplay ? `
+        <div class="viewer-replay-controls">
+          <h4>GA 回放（每代最优解）</h4>
+          <div class="replay-toolbar">
+            <button id="replayPlayBtn" class="btn-small">播放</button>
+            <span class="replay-gen-info">代数: <span id="replayGenLabel">-</span> / <span id="replayTotalGen">${maxGen}</span></span>
+          </div>
+          <input id="replaySlider" type="range" min="0" max="${maxGen}" value="${maxGen}" class="replay-slider">
+          <div class="replay-stats">
+            <div>best: <span id="replayBest">-</span> | avg: <span id="replayAvg">-</span> | std: <span id="replayStd">-</span></div>
+            <div>t=<span id="replayT">-</span>mm, rot=<span id="replayRot">-</span>°, lat=<span id="replayLat">-</span>mm</div>
+            <div>xover=<span id="replayXover">-</span>, mut=<span id="replayMut">-</span>, time=<span id="replayTime">-</span>ms</div>
+          </div>
+        </div>
+        ` : ''}
+      `;
+    }
+  }
+
+  static _bindViewerControls() {
+    const showTargetAxis = document.getElementById('showTargetAxis');
+    const showCandidateAxis = document.getElementById('showCandidateAxis');
+    const showOutsidePoints = document.getElementById('showOutsidePoints');
+
+    if (showTargetAxis) {
+      showTargetAxis.addEventListener('change', () => {
+        if (this._viewer) this._viewer.setTargetAxisVisible(showTargetAxis.checked);
+      });
+    }
+    if (showCandidateAxis) {
+      showCandidateAxis.addEventListener('change', () => {
+        if (this._viewer) this._viewer.setCandidateAxisVisible(showCandidateAxis.checked);
+      });
+    }
+    if (showOutsidePoints) {
+      showOutsidePoints.addEventListener('change', () => {
+        if (this._viewer) this._viewer.setOutsidePointsVisible(showOutsidePoints.checked);
+      });
     }
   }
 

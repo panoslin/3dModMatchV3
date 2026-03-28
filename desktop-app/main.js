@@ -94,13 +94,14 @@ function startBackend() {
       PYTHONPATH: pythonPathEnv
     };
     
-    // 如果使用虚拟环境，设置 PYTHONHOME 并添加 site-packages 到 PYTHONPATH
+    // 如果使用虚拟环境，添加 site-packages 到 PYTHONPATH
+    // 注意：不设置 PYTHONHOME —— venv 通过 pyvenv.cfg 定位基础 Python 的 stdlib，
+    // 设置 PYTHONHOME 会使 Python 在 venv 中找不到 encodings 等标准库模块
     if (pythonPath.includes('venv')) {
-      // pythonPath = .../venv/bin/python3  → dirname = .../venv/bin  → .. = .../venv
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
-      // PYTHONHOME tells the bundled Python where to find stdlib (encodings, os, etc.)
-      env.PYTHONHOME = venvRoot;
-      console.log('设置PYTHONHOME:', venvRoot);
+      // 确保清除任何可能继承的 PYTHONHOME
+      delete env.PYTHONHOME;
+      console.log('使用虚拟环境:', venvRoot);
       // macOS/Linux: venv/lib/pythonX.Y/site-packages
       // Windows:     venv/Lib/site-packages
       let sitePackagesPath = null;

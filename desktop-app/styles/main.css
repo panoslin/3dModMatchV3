@@ -1239,9 +1239,82 @@ body {
   border-radius: 2px;
 }
 
-.legend-shoe::before     { background-color: rgba(0, 122, 255, 0.8); }
-.legend-blank-orig::before { background-color: rgba(136, 136, 136, 0.8); }
-.legend-blank-trans::before { background-color: rgba(52, 199, 89, 0.8); }
+.legend-shoe::before     { background-color: rgba(128, 128, 128, 1.0); }
+.legend-blank-orig::before { background-color: rgba(64, 128, 255, 0.6); }
+.legend-outside-pts::before { background-color: rgba(255, 0, 255, 0.9); }
+
+/* 3D 查看器控制面板 */
+#viewer-controls {
+  padding: 8px 12px;
+  background: #222;
+  font-size: 12px;
+  color: #ccc;
+  max-height: 260px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.viewer-axis-controls,
+.viewer-replay-controls {
+  margin-bottom: 8px;
+}
+
+.viewer-axis-controls h4,
+.viewer-replay-controls h4 {
+  font-size: 12px;
+  color: #aaa;
+  margin-bottom: 6px;
+}
+
+.viewer-control-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.viewer-control-label input[type="checkbox"] {
+  margin: 0;
+}
+
+.replay-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.btn-small {
+  padding: 3px 10px;
+  font-size: 11px;
+  background: #4080FF;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-small:hover {
+  background: #5090FF;
+}
+
+.replay-gen-info {
+  font-size: 11px;
+  color: #999;
+}
+
+.replay-slider {
+  width: 100%;
+  margin: 4px 0;
+}
+
+.replay-stats {
+  font-size: 10px;
+  color: #888;
+  line-height: 1.6;
+}
 
 .modal-detail-pane {
   width: 400px;
