@@ -11,10 +11,15 @@ const BACKEND_PORT = 5000;
 // 启动后端Python服务
 function startBackend() {
   return new Promise((resolve, reject) => {
-    // 在打包后的应用中，backend目录在resources目录下
-    let backendPath = path.join(__dirname, 'backend', 'server.py');
-    if (!fs.existsSync(backendPath) && process.resourcesPath) {
-      backendPath = path.join(process.resourcesPath, 'backend', 'server.py');
+    // 在打包后的应用中，backend 作为 extraResources 在 resources 目录下（真实 FS）。
+    // 优先检查 resourcesPath，避免从 app.asar 内部读取（spawn 无法执行 asar 内的脚本）。
+    let backendPath = null;
+    if (process.resourcesPath) {
+      const resBackend = path.join(process.resourcesPath, 'backend', 'server.py');
+      if (fs.existsSync(resBackend)) backendPath = resBackend;
+    }
+    if (!backendPath) {
+      backendPath = path.join(__dirname, 'backend', 'server.py');
     }
     
     // 检查后端文件是否存在
@@ -30,18 +35,23 @@ function startBackend() {
     const isWin = process.platform === 'win32';
     const venvBin = isWin ? path.join('venv', 'Scripts', 'python.exe')
                           : path.join('venv', 'bin', 'python3');
-    const venvPythonPath = path.join(__dirname, venvBin);
-    const venvPythonPathAlt = process.resourcesPath
+
+    // In packaged app, extraResources land under process.resourcesPath (real FS).
+    // __dirname points inside app.asar where venv doesn't actually exist as a
+    // real executable, but Electron's patched fs.existsSync can return true for
+    // paths inside asar — so we must check resourcesPath FIRST.
+    const venvPythonPathRes = process.resourcesPath
                               ? path.join(process.resourcesPath, venvBin)
                               : null;
+    const venvPythonPathLocal = path.join(__dirname, venvBin);
 
-    // 优先尝试虚拟环境
-    if (fs.existsSync(venvPythonPath)) {
-      pythonPath = venvPythonPath;
-      console.log('使用虚拟环境Python:', pythonPath);
-    } else if (venvPythonPathAlt && fs.existsSync(venvPythonPathAlt)) {
-      pythonPath = venvPythonPathAlt;
+    // 优先尝试 resources 目录（打包后的真实路径）
+    if (venvPythonPathRes && fs.existsSync(venvPythonPathRes)) {
+      pythonPath = venvPythonPathRes;
       console.log('使用打包后的虚拟环境Python:', pythonPath);
+    } else if (fs.existsSync(venvPythonPathLocal)) {
+      pythonPath = venvPythonPathLocal;
+      console.log('使用本地虚拟环境Python:', pythonPath);
     } else {
       // 回退到系统Python
       pythonPath = process.platform === 'win32' ? 'python' : 'python3';
