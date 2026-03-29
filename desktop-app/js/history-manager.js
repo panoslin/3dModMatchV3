@@ -121,7 +121,7 @@ class HistoryManager {
     tbody.innerHTML = '';
 
     if (items.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;padding:32px;">暂无匹配记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:32px;">暂无匹配记录</td></tr>';
       return;
     }
 
@@ -133,12 +133,28 @@ class HistoryManager {
       const wrClass = bestWr >= 96 ? 'good' : bestWr >= 90 ? 'warn' : '';
       const matchSummary = `${item.matched_count} / ${item.total_count} 匹配`;
 
+      // 采纳状态列
+      let adoptionCellHtml;
+      if (item.adoption) {
+        const a = item.adoption;
+        const tagsHtml = (a.tags || []).map(t => `<span class="adopted-tag-pill">${this.escapeHtml(t)}</span>`).join('');
+        adoptionCellHtml = `
+          <div class="adoption-cell-adopted">
+            <span class="adopted-badge">✓ 已采纳</span>
+            <span class="adoption-blank-name">${this.escapeHtml(a.blank_name || '')}</span>
+            ${tagsHtml ? `<div class="adoption-tags-row">${tagsHtml}</div>` : ''}
+          </div>`;
+      } else {
+        adoptionCellHtml = '<span class="adoption-cell-none">—</span>';
+      }
+
       row.innerHTML = `
         <td><input type="checkbox" data-id="${this.escapeHtml(item.task_id)}" ${isSelected ? 'checked' : ''}></td>
         <td><strong>${this.escapeHtml(item.shoe_name || '')}</strong></td>
         <td>${matchSummary}</td>
         <td>${this.escapeHtml(item.best_blank_name || '—')}</td>
         <td style="color: var(--${wrClass === 'good' ? 'success' : wrClass === 'warn' ? 'warning' : 'text-primary'}-color); font-weight:600;">${bestWr.toFixed(2)}%</td>
+        <td>${adoptionCellHtml}</td>
         <td>${this.formatDate(item.completed_at)}</td>
         <td>
           <button class="btn-secondary btn-sm" onclick="historyManager.viewTaskDetail('${this.escapeHtml(item.task_id)}')">查看详情</button>
@@ -184,32 +200,33 @@ class HistoryManager {
       return;
     }
     ResultDetailView.showAllResults({
+      taskId: item.task_id,
       shoeName: item.shoe_name,
       results: item.results || [],
+      adoption: item.adoption || null,
     });
   }
 
   // ===== Export =====
   async exportCSV() {
     try {
-      // 使用扁平的 match_records 进行导出
-      const data = await API.getHistory({
-        page: 1,
-        per_page: 10000,
-      });
-      const records = data.items;
+      // 使用任务级缓存数据（含采纳信息）进行导出
+      const items = this._cachedItems;
 
-      const headers = ['鞋模名称', '粗胚名称', '粗胚分类', '匹配时间', '包裹率(%)', 'P96间隙(mm)', '体积', '完全包裹'];
-      const rows = records.map(r => [
-        r.shoe_name || '',
-        r.blank_name || '',
-        r.category_name || '',
-        r.match_time || '',
-        ((r.wrapping_ratio || 0) * 100).toFixed(2),
-        (r.percentile96_clearance || 0).toFixed(2),
-        (r.volume || 0).toFixed(2),
-        r.is_fully_wrapped ? '是' : '否',
-      ]);
+      const headers = ['鞋模名称', '最佳粗胚', '匹配结果', '最佳包裹率(%)', '采纳粗胚', '采纳标注', '采纳标签', '匹配时间'];
+      const rows = items.map(item => {
+        const a = item.adoption;
+        return [
+          item.shoe_name || '',
+          item.best_blank_name || '',
+          `${item.matched_count} / ${item.total_count}`,
+          ((item.best_wrapping_ratio || 0) * 100).toFixed(2),
+          a ? (a.blank_name || '') : '',
+          a ? (a.notes || '') : '',
+          a ? (a.tags || []).join('|') : '',
+          item.completed_at || '',
+        ];
+      });
 
       const csv = [headers, ...rows].map(row => row.map(c => `"${c}"`).join(',')).join('\n');
       const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -232,22 +249,22 @@ class HistoryManager {
         await new Promise((res, rej) => { script.onload = res; script.onerror = rej; document.head.appendChild(script); });
       }
 
-      const data = await API.getHistory({ page: 1, per_page: 10000 });
-      const records = data.items;
+      const items = this._cachedItems;
 
-      const headers = ['鞋模名称', '粗胚名称', '粗胚分类', '匹配时间', '包裹率(%)', 'P96间隙(mm)', '体积', '最优平移(mm)', '最优旋转(°)', '完全包裹'];
-      const rows = records.map(r => [
-        r.shoe_name || '',
-        r.blank_name || '',
-        r.category_name || '',
-        r.match_time || '',
-        ((r.wrapping_ratio || 0) * 100).toFixed(2),
-        (r.percentile96_clearance || 0).toFixed(2),
-        (r.volume || 0).toFixed(2),
-        (r.optimal_translation || 0).toFixed(2),
-        (r.optimal_rotation_angle_deg || 0).toFixed(2),
-        r.is_fully_wrapped ? '是' : '否',
-      ]);
+      const headers = ['鞋模名称', '最佳粗胚', '匹配结果', '最佳包裹率(%)', '采纳粗胚', '采纳标注', '采纳标签', '匹配时间'];
+      const rows = items.map(item => {
+        const a = item.adoption;
+        return [
+          item.shoe_name || '',
+          item.best_blank_name || '',
+          `${item.matched_count} / ${item.total_count}`,
+          ((item.best_wrapping_ratio || 0) * 100).toFixed(2),
+          a ? (a.blank_name || '') : '',
+          a ? (a.notes || '') : '',
+          a ? (a.tags || []).join('|') : '',
+          item.completed_at || '',
+        ];
+      });
 
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);

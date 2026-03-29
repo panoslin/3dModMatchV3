@@ -219,4 +219,20 @@ class API {
   static async deleteMatchRecord(recordId) {
     return this.request(`/match/record/${recordId}`, { method: 'DELETE' });
   }
+
+  // 采纳记录API
+  static async adoptMatch(data) {
+    return this.request('/adoptions', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  static async getAdoption(taskId) {
+    return this.request(`/adoptions/${taskId}`);
+  }
+
+  static async revokeAdoption(taskId) {
+    return this.request(`/adoptions/${taskId}`, { method: 'DELETE' });
+  }
 }

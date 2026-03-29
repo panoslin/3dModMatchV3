@@ -259,6 +259,7 @@ class MatchManager {
       this.matchTasks.delete(localKey);
       if (taskInfo) {
         taskInfo.isPending = false;
+        taskInfo.taskId = taskData.task_id;
         this.matchTasks.set(taskData.task_id, taskInfo);
       }
       // Poll immediately so UI reflects server state without waiting 2s
@@ -461,7 +462,12 @@ class MatchManager {
 
   // ── Detail modal — show ALL blanks for a shoe (delegates to shared module) ──
   previewAllResults(task) {
-    ResultDetailView.showAllResults(task);
+    // task.taskId is the server-assigned task ID (the matchTasks Map key after upload)
+    ResultDetailView.showAllResults({
+      taskId: task.taskId || null,
+      shoeName: task.shoeName,
+      results: task.results || [],
+    });
   }
 
   _formatDuration(seconds) {

@@ -444,6 +444,22 @@ def init_db():
         )
     ''')
 
+    # 采纳记录表
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS adoptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL UNIQUE,
+            record_id INTEGER,
+            blank_id INTEGER,
+            blank_name TEXT,
+            shoe_name TEXT,
+            notes TEXT DEFAULT '',
+            tags TEXT DEFAULT '[]',
+            adopted_at TIMESTAMP NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES match_tasks(id)
+        )
+    ''')
+
     # 迁移：为已有数据库添加 shoe_name 列
     try:
         c.execute('ALTER TABLE match_tasks ADD COLUMN shoe_name TEXT')
@@ -1332,12 +1348,122 @@ def get_history_tasks():
             'results': results,
         })
 
+    # 批量查询采纳数据
+    task_ids = [item['task_id'] for item in items]
+    adoptions_map = {}
+    if task_ids:
+        conn2 = sqlite3.connect(str(DB_PATH))
+        conn2.row_factory = sqlite3.Row
+        c2 = conn2.cursor()
+        placeholders = ','.join('?' * len(task_ids))
+        c2.execute(f'SELECT * FROM adoptions WHERE task_id IN ({placeholders})', task_ids)
+        for a_row in c2.fetchall():
+            a = dict(a_row)
+            a['tags'] = json.loads(a.get('tags') or '[]')
+            adoptions_map[a['task_id']] = a
+        conn2.close()
+
+    for item in items:
+        item['adoption'] = adoptions_map.get(item['task_id'])
+
     return jsonify({
         'items': items,
         'total': total,
         'page': page,
         'per_page': per_page,
     })
+
+
+# 采纳记录API
+@app.route('/api/adoptions', methods=['POST'])
+def create_adoption():
+    """采纳匹配结果"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': '请求数据无效'}), 400
+
+    task_id = data.get('task_id')
+    record_id = data.get('record_id')
+    blank_name = data.get('blank_name', '')
+    shoe_name = data.get('shoe_name', '')
+    notes = data.get('notes', '').strip()
+    tags = data.get('tags', [])
+    if not isinstance(tags, list):
+        tags = []
+    # 标签清洗：去空白、去重、限长
+    tags = list(dict.fromkeys(t.strip()[:20] for t in tags if t and t.strip()))[:10]
+
+    if not task_id:
+        return jsonify({'error': '缺少 task_id'}), 400
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # 确认任务存在
+    c.execute('SELECT id FROM match_tasks WHERE id = ?', (task_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': '匹配任务不存在'}), 404
+
+    adopted_at = now_cst()
+    try:
+        c.execute(
+            '''INSERT INTO adoptions (task_id, record_id, blank_id, blank_name, shoe_name, notes, tags, adopted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (task_id, record_id, data.get('blank_id'), blank_name, shoe_name,
+             notes, json.dumps(tags, ensure_ascii=False), adopted_at)
+        )
+        adoption_id = c.lastrowid
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # 已有采纳记录，执行更新
+        c.execute(
+            '''UPDATE adoptions SET record_id=?, blank_id=?, blank_name=?, shoe_name=?,
+               notes=?, tags=?, adopted_at=? WHERE task_id=?''',
+            (record_id, data.get('blank_id'), blank_name, shoe_name,
+             notes, json.dumps(tags, ensure_ascii=False), adopted_at, task_id)
+        )
+        c.execute('SELECT id FROM adoptions WHERE task_id = ?', (task_id,))
+        adoption_id = c.fetchone()['id']
+        conn.commit()
+
+    c.execute('SELECT * FROM adoptions WHERE id = ?', (adoption_id,))
+    row = dict(c.fetchone())
+    conn.close()
+    row['tags'] = json.loads(row.get('tags') or '[]')
+    return jsonify(row), 201
+
+
+@app.route('/api/adoptions/<task_id>', methods=['GET'])
+def get_adoption(task_id):
+    """获取指定任务的采纳记录"""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT * FROM adoptions WHERE task_id = ?', (task_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'adoption': None})
+    result = dict(row)
+    result['tags'] = json.loads(result.get('tags') or '[]')
+    return jsonify({'adoption': result})
+
+
+@app.route('/api/adoptions/<task_id>', methods=['DELETE'])
+def delete_adoption(task_id):
+    """撤销采纳"""
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute('SELECT id FROM adoptions WHERE task_id = ?', (task_id,))
+    if not c.fetchone():
+        conn.close()
+        return jsonify({'error': '采纳记录不存在'}), 404
+    c.execute('DELETE FROM adoptions WHERE task_id = ?', (task_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
 
 
 # 匹配工作线程

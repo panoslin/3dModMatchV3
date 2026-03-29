@@ -1868,3 +1868,247 @@ body {
   padding: 3px 8px;
   border-radius: 4px;
 }
+
+/* ===== 采纳功能样式 ===== */
+.adopt-modal-content {
+  max-width: 480px;
+  width: 100%;
+}
+
+.adopt-summary {
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.adopt-summary-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.adopt-summary-metrics {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.adopt-summary-metric {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.adopt-summary-metric strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.adopt-field {
+  margin-bottom: 14px;
+}
+
+.adopt-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.adopt-textarea {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+  color: var(--text-primary);
+  background: #fff;
+  transition: border-color 0.2s;
+}
+
+.adopt-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+.adopt-tags-input-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-height: 40px;
+  align-items: center;
+  transition: border-color 0.2s;
+  background: #fff;
+}
+
+.adopt-tags-input-wrap:focus-within {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+.adopt-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.adopt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--primary-color);
+  border: 1px solid rgba(0, 122, 255, 0.2);
+  border-radius: 20px;
+  padding: 2px 10px 2px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.adopt-tag-remove {
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.6;
+  margin-left: 2px;
+  transition: opacity 0.15s;
+}
+
+.adopt-tag-remove:hover {
+  opacity: 1;
+}
+
+.adopt-tag-input {
+  border: none;
+  outline: none;
+  font-size: 14px;
+  font-family: inherit;
+  flex: 1;
+  min-width: 120px;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 2px 0;
+}
+
+.adopt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* 已采纳徽章（通用） */
+.adopted-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--success-color);
+  border: 1px solid rgba(52, 199, 89, 0.25);
+  border-radius: 20px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 结果详情中的采纳操作区 */
+.adopt-action-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.adopted-info {
+  background: rgba(52, 199, 89, 0.06);
+  border: 1px solid rgba(52, 199, 89, 0.2);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.adopted-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.adopted-notes {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+
+.adopted-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.adopted-tag-pill {
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--primary-color);
+  border: 1px solid rgba(0, 122, 255, 0.2);
+  border-radius: 20px;
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 列表行中的已采纳标记 */
+.match-list-row.row-adopted .match-list-name::after {
+  content: ' ✓';
+  color: var(--success-color);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.match-list-adopted-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success-color);
+  display: inline-block;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+/* 历史记录表"采纳状态"列样式 */
+.adoption-cell-none {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.adoption-cell-adopted {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.adoption-blank-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.adoption-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}

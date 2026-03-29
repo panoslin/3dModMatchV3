@@ -3,6 +3,12 @@
 class ResultDetailView {
   static _viewer = null;
   static _loadSeq = 0;
+  static _currentTask = null;       // 当前打开的 task 对象（含 taskId, shoeName）
+  static _currentAdoption = null;   // 当前任务的采纳记录（或 null）
+  static _currentResult = null;     // 当前选中的结果行
+  static _adoptModalListenersSetup = false;
+  static _adoptTags = [];           // 采纳弹窗中的标签列表
+  static _pendingAdoptResult = null; // 待采纳的结果行
 
   static _esc(text) {
     if (!text && text !== 0) return '';
@@ -13,11 +19,24 @@ class ResultDetailView {
 
   /**
    * 展示鞋模的全部粗胚匹配结果
-   * @param {object} task - { shoeName: string, results: Array }
+   * @param {object} task - { taskId?: string, shoeName: string, results: Array, adoption?: object }
    */
-  static showAllResults(task) {
+  static async showAllResults(task) {
+    this._currentTask = task;
+    this._currentAdoption = task.adoption || null;
+
     const modal = document.getElementById('match-result-modal');
     modal.classList.add('active');
+
+    // 如果有 taskId 且未预加载采纳数据，异步获取
+    if (task.taskId && !task.adoption) {
+      try {
+        const data = await API.getAdoption(task.taskId);
+        this._currentAdoption = data.adoption || null;
+      } catch (_) {
+        this._currentAdoption = null;
+      }
+    }
 
     const matched = (task.results || [])
       .filter(r => r.matched)
@@ -46,10 +65,12 @@ class ResultDetailView {
       const wr = (mi.wrapping_ratio || 0) * 100;
       const wrCls = isMatched ? (wr >= 96 ? 'good' : 'warn') : 'bad';
       const isFirstRow = idx === 0;
+      const isAdopted = this._currentAdoption && this._currentAdoption.record_id === r.record_id;
 
       const row = document.createElement('div');
-      row.className = `match-list-row ${isFirstRow ? 'active' : ''} ${isMatched ? '' : 'row-unmatched'}`;
+      row.className = `match-list-row ${isFirstRow ? 'active' : ''} ${isMatched ? '' : 'row-unmatched'} ${isAdopted ? 'row-adopted' : ''}`;
       row.dataset.index = idx;
+      row.dataset.recordId = r.record_id || '';
 
       let rankHtml;
       if (isMatched && idx === 0) rankHtml = '<span class="rank-best">最佳</span>';
@@ -59,10 +80,11 @@ class ResultDetailView {
       const wrHtml = wr > 0 ? `${wr.toFixed(1)}%` : '—';
       const p96Html = mi.percentile96_clearance != null ? `${mi.percentile96_clearance.toFixed(2)} mm` : '—';
       const volHtml = mi.volume ? mi.volume.toFixed(0) : '—';
+      const adoptedDot = isAdopted ? '<span class="match-list-adopted-dot"></span>' : '';
 
       row.innerHTML = `
         <div class="match-list-rank">${rankHtml}</div>
-        <div class="match-list-name">${this._esc(mi.blank_name || r.blank_name || 'N/A')}</div>
+        <div class="match-list-name">${adoptedDot}${this._esc(mi.blank_name || r.blank_name || 'N/A')}</div>
         <div class="match-list-wr ${wrCls}">${wrHtml}</div>
         <div class="match-list-p96">${p96Html}</div>
         <div class="match-list-vol">${volHtml}</div>
@@ -70,7 +92,8 @@ class ResultDetailView {
       row.addEventListener('click', () => {
         listEl.querySelectorAll('.match-list-row').forEach(el => el.classList.remove('active'));
         row.classList.add('active');
-        this.showMatchDetail(overviewEl, r, task.shoeName);
+        this._currentResult = r;
+        this.showMatchDetail(overviewEl, r, task.shoeName, listEl);
         if (r.record_id) this.load3DPreview(r.record_id);
         else this._showNoPreview();
       });
@@ -81,16 +104,40 @@ class ResultDetailView {
 
     if (allSorted.length > 0) {
       const first = allSorted[0];
-      this.showMatchDetail(overviewEl, first, task.shoeName);
+      this._currentResult = first;
+      this.showMatchDetail(overviewEl, first, task.shoeName, listEl);
       if (first.record_id) this.load3DPreview(first.record_id);
       else this._showNoPreview();
     }
+
+    this._setupAdoptModalListeners();
   }
 
-  static showMatchDetail(overviewEl, result, shoeName) {
+  /** 刷新结果列表中的已采纳标记（不重新渲染整个列表） */
+  static _refreshListAdoptedState(listEl) {
+    listEl.querySelectorAll('.match-list-row').forEach(row => {
+      const recordId = parseInt(row.dataset.recordId);
+      const isAdopted = this._currentAdoption && this._currentAdoption.record_id === recordId;
+      row.classList.toggle('row-adopted', isAdopted);
+      const nameEl = row.querySelector('.match-list-name');
+      if (nameEl) {
+        // 移除旧 dot
+        const oldDot = nameEl.querySelector('.match-list-adopted-dot');
+        if (oldDot) oldDot.remove();
+        if (isAdopted) {
+          const dot = document.createElement('span');
+          dot.className = 'match-list-adopted-dot';
+          nameEl.insertBefore(dot, nameEl.firstChild);
+        }
+      }
+    });
+  }
+
+  static showMatchDetail(overviewEl, result, shoeName, listEl) {
     const mi = result.match_info || {};
     const wr = (mi.wrapping_ratio || 0) * 100;
     const isMatched = result.matched;
+    const isAdopted = this._currentAdoption && this._currentAdoption.record_id === result.record_id;
 
     let failReasons = [];
     if (!isMatched) {
@@ -100,6 +147,33 @@ class ResultDetailView {
         if (!mi.meets_direction_constraints) failReasons.push('方向约束不满足');
         if (!mi.is_fully_wrapped) failReasons.push(`包裹率不足 (${wr.toFixed(1)}% < ${((mi.target_wrapping_ratio || 0.96) * 100).toFixed(0)}%)`);
         if (failReasons.length === 0) failReasons.push('不满足匹配条件');
+      }
+    }
+
+    // 构建采纳操作区 HTML
+    let adoptSectionHtml = '';
+    if (this._currentTask && this._currentTask.taskId) {
+      if (isAdopted) {
+        const a = this._currentAdoption;
+        const tagsHtml = (a.tags || []).map(t => `<span class="adopted-tag-pill">${this._esc(t)}</span>`).join('');
+        const notesHtml = a.notes ? `<div class="adopted-notes">${this._esc(a.notes)}</div>` : '';
+        const tagsRowHtml = tagsHtml ? `<div class="adopted-tags">${tagsHtml}</div>` : '';
+        adoptSectionHtml = `
+          <div class="adopt-action-section">
+            <div class="adopted-info">
+              <div class="adopted-info-header">
+                <span class="adopted-badge">✓ 已采纳</span>
+                <button class="btn-secondary btn-sm" id="revoke-adopt-btn">撤销采纳</button>
+              </div>
+              ${notesHtml}
+              ${tagsRowHtml}
+            </div>
+          </div>`;
+      } else if (isMatched) {
+        adoptSectionHtml = `
+          <div class="adopt-action-section">
+            <button class="btn-primary" id="adopt-btn" style="width:100%;">采纳此粗胚</button>
+          </div>`;
       }
     }
 
@@ -165,7 +239,32 @@ class ResultDetailView {
           </div>
         </div>
       </div>` : ''}
+      ${adoptSectionHtml}
     `;
+
+    // 绑定采纳/撤销按钮
+    const adoptBtn = overviewEl.querySelector('#adopt-btn');
+    if (adoptBtn) {
+      adoptBtn.addEventListener('click', () => this._openAdoptModal(result));
+    }
+
+    const revokeBtn = overviewEl.querySelector('#revoke-adopt-btn');
+    if (revokeBtn) {
+      revokeBtn.addEventListener('click', async () => {
+        revokeBtn.disabled = true;
+        revokeBtn.textContent = '撤销中...';
+        try {
+          await API.revokeAdoption(this._currentTask.taskId);
+          this._currentAdoption = null;
+          this._refreshListAdoptedState(listEl || document.querySelector('.all-matches-list'));
+          this.showMatchDetail(overviewEl, result, shoeName, listEl);
+        } catch (e) {
+          alert('撤销采纳失败: ' + e.message);
+          revokeBtn.disabled = false;
+          revokeBtn.textContent = '撤销采纳';
+        }
+      });
+    }
   }
 
   static async load3DPreview(recordId) {
@@ -324,5 +423,116 @@ class ResultDetailView {
       this._viewer.dispose();
       this._viewer = null;
     }
+  }
+
+  // ===== 采纳弹窗逻辑 =====
+
+  static _openAdoptModal(result) {
+    this._pendingAdoptResult = result;
+    const mi = result.match_info || {};
+    const wr = ((mi.wrapping_ratio || 0) * 100).toFixed(1);
+    const blankName = mi.blank_name || result.blank_name || '';
+
+    document.getElementById('adopt-summary').innerHTML = `
+      <div class="adopt-summary-title">${this._esc(blankName)}</div>
+      <div class="adopt-summary-metrics">
+        <span class="adopt-summary-metric">包裹率 <strong>${wr}%</strong></span>
+        <span class="adopt-summary-metric">体积 <strong>${mi.volume ? mi.volume.toFixed(0) : '—'}</strong></span>
+        <span class="adopt-summary-metric">P96间隙 <strong>${mi.percentile96_clearance != null ? mi.percentile96_clearance.toFixed(2) + ' mm' : '—'}</strong></span>
+      </div>
+    `;
+
+    document.getElementById('adopt-notes').value = '';
+    this._adoptTags = [];
+    this._renderTagChips();
+
+    document.getElementById('adopt-modal').classList.add('active');
+    document.getElementById('adopt-notes').focus();
+  }
+
+  static _setupAdoptModalListeners() {
+    if (this._adoptModalListenersSetup) return;
+    this._adoptModalListenersSetup = true;
+
+    const closeModal = () => {
+      document.getElementById('adopt-modal').classList.remove('active');
+      this._pendingAdoptResult = null;
+    };
+
+    document.getElementById('adopt-modal-close').addEventListener('click', closeModal);
+    document.getElementById('adopt-cancel-btn').addEventListener('click', closeModal);
+    document.getElementById('adopt-modal').addEventListener('click', e => {
+      if (e.target === document.getElementById('adopt-modal')) closeModal();
+    });
+
+    // 标签输入：回车添加，Backspace 删除最后一个
+    const tagInput = document.getElementById('adopt-tag-input');
+    tagInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = tagInput.value.trim().slice(0, 20);
+        if (val && !this._adoptTags.includes(val) && this._adoptTags.length < 10) {
+          this._adoptTags = [...this._adoptTags, val];
+          this._renderTagChips();
+        }
+        tagInput.value = '';
+      } else if (e.key === 'Backspace' && tagInput.value === '' && this._adoptTags.length > 0) {
+        this._adoptTags = this._adoptTags.slice(0, -1);
+        this._renderTagChips();
+      }
+    });
+
+    // 确认采纳
+    document.getElementById('adopt-confirm-btn').addEventListener('click', async () => {
+      const result = this._pendingAdoptResult;
+      if (!result || !this._currentTask || !this._currentTask.taskId) return;
+
+      const confirmBtn = document.getElementById('adopt-confirm-btn');
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = '采纳中...';
+
+      const mi = result.match_info || {};
+      try {
+        const adoption = await API.adoptMatch({
+          task_id: this._currentTask.taskId,
+          record_id: result.record_id || null,
+          blank_id: result.blank_id || mi.blank_id || null,
+          blank_name: mi.blank_name || result.blank_name || '',
+          shoe_name: this._currentTask.shoeName || '',
+          notes: document.getElementById('adopt-notes').value.trim(),
+          tags: this._adoptTags,
+        });
+
+        this._currentAdoption = adoption;
+        closeModal();
+
+        // 刷新列表标记和详情区
+        const listEl = document.querySelector('.all-matches-list');
+        if (listEl) this._refreshListAdoptedState(listEl);
+        const overviewEl = document.getElementById('match-result-overview');
+        if (overviewEl) this.showMatchDetail(overviewEl, result, this._currentTask.shoeName, listEl);
+      } catch (e) {
+        alert('采纳失败: ' + e.message);
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '确认采纳';
+      }
+    });
+  }
+
+  static _renderTagChips() {
+    const listEl = document.getElementById('adopt-tags-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    this._adoptTags.forEach(tag => {
+      const chip = document.createElement('span');
+      chip.className = 'adopt-tag';
+      chip.innerHTML = `${this._esc(tag)}<span class="adopt-tag-remove" data-tag="${this._esc(tag)}">×</span>`;
+      chip.querySelector('.adopt-tag-remove').addEventListener('click', () => {
+        this._adoptTags = this._adoptTags.filter(t => t !== tag);
+        this._renderTagChips();
+      });
+      listEl.appendChild(chip);
+    });
   }
 }

@@ -229,6 +229,7 @@
                 <th>匹配结果</th>
                 <th>最佳粗胚</th>
                 <th>最佳包裹率</th>
+                <th>采纳状态</th>
                 <th>匹配时间</th>
                 <th>操作</th>
               </tr>
@@ -311,6 +312,34 @@
           <div class="cat-create-actions">
             <button class="btn-secondary" id="create-category-cancel">取消</button>
             <button class="btn-primary" id="create-category-submit">创建</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 模态框：采纳匹配结果 -->
+    <div class="modal" id="adopt-modal">
+      <div class="modal-content adopt-modal-content">
+        <div class="modal-header">
+          <h2>采纳匹配结果</h2>
+          <button class="modal-close" id="adopt-modal-close">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="adopt-summary" id="adopt-summary"></div>
+          <div class="adopt-field">
+            <label class="adopt-label">标注（可选）</label>
+            <textarea id="adopt-notes" class="adopt-textarea" rows="3" placeholder="输入备注信息..."></textarea>
+          </div>
+          <div class="adopt-field">
+            <label class="adopt-label">标签（可选，回车添加）</label>
+            <div class="adopt-tags-input-wrap">
+              <div class="adopt-tags-list" id="adopt-tags-list"></div>
+              <input type="text" id="adopt-tag-input" class="adopt-tag-input" placeholder="输入标签后按回车...">
+            </div>
+          </div>
+          <div class="adopt-actions">
+            <button class="btn-secondary" id="adopt-cancel-btn">取消</button>
+            <button class="btn-primary" id="adopt-confirm-btn">确认采纳</button>
           </div>
         </div>
       </div>
