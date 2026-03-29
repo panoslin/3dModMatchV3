@@ -51,6 +51,7 @@
         "from": "venv",
         "to": "venv",
         "filter": [
+          "pyvenv.cfg",
           "**/bin/python*",
           "**/bin/activate*",
           "**/lib/Python",

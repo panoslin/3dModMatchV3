@@ -219,11 +219,19 @@ import site
 "@ | Set-Content $PthFile -Encoding ASCII
 Info "Created python${PyVerShort}._pth"
 
-# Remove pyvenv.cfg — no longer needed (._pth takes precedence and we don't
-# want Python's venv detection to interfere).
+# Keep pyvenv.cfg — Python 3.11 requires it to exist (exit code 106 if missing).
+# Rewrite "home" to the venv's own Scripts dir.  The NSIS installer will
+# overwrite it again with the actual $INSTDIR path at install time.
 $PyvenvCfg = Join-Path $VenvDir "pyvenv.cfg"
-if (Test-Path $PyvenvCfg) { Remove-Item $PyvenvCfg -Force }
-Info "Removed pyvenv.cfg (._pth mode)"
+$VenvScriptsAbs = Join-Path $VenvDir "Scripts"
+if (Test-Path $PyvenvCfg) {
+    $content = Get-Content $PyvenvCfg -Raw
+    $content = $content -replace '(?m)^home\s*=.*', "home = $VenvScriptsAbs"
+    Set-Content $PyvenvCfg $content -NoNewline
+} else {
+    "home = $VenvScriptsAbs`ninclude-system-site-packages = false`n" | Set-Content $PyvenvCfg -NoNewline
+}
+Info "pyvenv.cfg kept (home = $VenvScriptsAbs)"
 
 # Python needs python3.dll and python3XX.dll next to (or above) the executable.
 # They were copied to DLLs/ earlier; also place them alongside Scripts\python.exe.
