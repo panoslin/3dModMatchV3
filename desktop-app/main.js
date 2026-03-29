@@ -137,8 +137,7 @@ function startBackend() {
     console.log('Python路径:', pythonPath);
     console.log('工作目录:', backendDir);
     writeLog('INFO', `启动后端: python=${pythonPath}, backend=${backendPath}, cwd=${backendDir}`);
-    writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}, PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
-    
+
     // 设置环境变量，优先使用虚拟环境的site-packages
     const env = {
       ...process.env,
@@ -182,6 +181,9 @@ function startBackend() {
       }
     }
     
+    writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
+    writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
+
     backendProcess = spawn(pythonPath, [backendPath], {
       cwd: backendDir,
       env: env
