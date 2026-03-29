@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -215,23 +215,82 @@ function startBackend() {
     writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
     writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
 
-    // Diagnostic: list key files next to python executable
+    // ── Comprehensive diagnostics ──────────────────────────────────────────
     const pythonDir = path.dirname(pythonPath);
+    const venvRootDiag = path.resolve(pythonDir, '..');
+
+    // 1. List key files
     try {
-      const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd|_pth)$/i.test(f));
-      writeLog('INFO', `Python dir files: ${dirFiles.join(', ')}`);
+      const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd|_pth|cfg)$/i.test(f));
+      writeLog('DIAG', `Scripts/ files: ${dirFiles.join(', ')}`);
     } catch (_) {}
 
-    // Quick sanity check: can the interpreter even start?
+    // 2. Show pyvenv.cfg content
+    const pyvenvPath = path.join(venvRootDiag, 'pyvenv.cfg');
     try {
-      const ver = execSync(`"${pythonPath}" -c "import sys; print(sys.version)"`, {
+      if (fs.existsSync(pyvenvPath)) {
+        const content = fs.readFileSync(pyvenvPath, 'utf8').trim().replace(/\n/g, ' | ');
+        writeLog('DIAG', `pyvenv.cfg: ${content}`);
+      } else {
+        writeLog('DIAG', 'pyvenv.cfg: MISSING');
+      }
+    } catch (e) {
+      writeLog('DIAG', `pyvenv.cfg read error: ${e.message}`);
+    }
+
+    // 3. Show ._pth content
+    try {
+      const pthFiles = fs.readdirSync(pythonDir).filter(f => f.endsWith('._pth'));
+      pthFiles.forEach(f => {
+        const content = fs.readFileSync(path.join(pythonDir, f), 'utf8').trim().replace(/\n/g, ' | ');
+        writeLog('DIAG', `${f}: ${content}`);
+      });
+    } catch (_) {}
+
+    // 4. List Lib/ top-level (verify stdlib is present)
+    try {
+      const libDir = path.join(venvRootDiag, 'Lib');
+      const libItems = fs.readdirSync(libDir).slice(0, 40);
+      writeLog('DIAG', `Lib/ (first 40): ${libItems.join(', ')}`);
+    } catch (e) {
+      writeLog('DIAG', `Lib/ error: ${e.message}`);
+    }
+
+    // 5. List DLLs/
+    try {
+      const dllsDir = path.join(venvRootDiag, 'DLLs');
+      const dllFiles = fs.readdirSync(dllsDir);
+      writeLog('DIAG', `DLLs/ (${dllFiles.length} files): ${dllFiles.join(', ')}`);
+    } catch (e) {
+      writeLog('DIAG', `DLLs/ error: ${e.message}`);
+    }
+
+    // 6. Run multiple diagnostic python commands
+    const diagTests = [
+      { name: 'bare --version', args: ['--version'] },
+      { name: 'isolated print', args: ['-I', '-S', '-c', 'print("ok")'] },
+      { name: 'verbose init', args: ['-v', '-S', '-c', 'print("ok")'] },
+    ];
+    for (const test of diagTests) {
+      writeLog('DIAG', `Testing: ${test.name} ...`);
+      const result = spawnSync(pythonPath, test.args, {
         env: env,
         timeout: 15000,
-        encoding: 'utf8'
-      }).trim();
-      writeLog('INFO', `Python version check OK: ${ver}`);
-    } catch (e) {
-      writeLog('FATAL', `Python cannot start: ${e.message}`);
+        encoding: 'utf8',
+        cwd: pythonDir
+      });
+      const stdout = (result.stdout || '').trim();
+      const stderr = (result.stderr || '').trim();
+      writeLog('DIAG', `  exit=${result.status} signal=${result.signal}`);
+      if (stdout) writeLog('DIAG', `  stdout: ${stdout.substring(0, 500)}`);
+      if (stderr) writeLog('DIAG', `  stderr: ${stderr.substring(0, 2000)}`);
+      if (result.error) writeLog('DIAG', `  error: ${result.error.message}`);
+
+      // If bare --version works, skip remaining tests
+      if (test.name === 'bare --version' && result.status === 0) {
+        writeLog('DIAG', 'Python interpreter OK, skipping further tests');
+        break;
+      }
     }
 
     backendProcess = spawn(pythonPath, ['-u', backendPath], {
