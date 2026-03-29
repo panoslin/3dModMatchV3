@@ -16,6 +16,12 @@ import queue
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+print(f"Python {sys.version}")
+print(f"Executable: {sys.executable}")
+print(f"Prefix: {sys.prefix}")
+print(f"PYTHONHOME: {os.environ.get('PYTHONHOME', '(unset)')}")
+sys.stdout.flush()
+
 # 中国标准时间 UTC+8
 _CST = timezone(timedelta(hours=8))
 
@@ -23,8 +29,16 @@ _CST = timezone(timedelta(hours=8))
 def now_cst() -> str:
     """返回当前中国标准时间的 ISO 格式字符串（含时区偏移）"""
     return datetime.now(_CST).strftime('%Y-%m-%dT%H:%M:%S+08:00')
+
+print("导入 Flask...")
+sys.stdout.flush()
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+print("Flask 导入成功")
+sys.stdout.flush()
+
+print("导入 numpy...")
+sys.stdout.flush()
 import tempfile
 import re
 import unicodedata
@@ -50,6 +64,8 @@ def safe_filename(filename: str) -> str:
     filename = re.sub(r'[\s_]+', '_', filename).strip('_. ')
     return filename or 'unnamed'
 import numpy as np
+print("numpy 导入成功")
+sys.stdout.flush()
 
 # 添加项目根目录到路径
 # 在打包后的应用中，路径可能不同
@@ -84,8 +100,11 @@ MATCHER_AVAILABLE = False
 MATCHER_LOAD_ERROR = None
 
 try:
+    print("导入 load_3dm..."); sys.stdout.flush()
     from load_3dm import load_3dm_file, get_3dm_file_info
+    print("导入 mesh_matcher..."); sys.stdout.flush()
     import mesh_matcher
+    print("导入 matcher..."); sys.stdout.flush()
     from matcher import find_optimal_match
     MATCHER_AVAILABLE = True
     print("✅ 匹配模块导入成功")

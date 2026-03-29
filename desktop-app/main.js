@@ -170,7 +170,9 @@ function startBackend() {
       ...process.env,
       FLASK_ENV: 'production',
       PORT: BACKEND_PORT.toString(),
-      PYTHONPATH: pythonPathEnv
+      PYTHONPATH: pythonPathEnv,
+      PYTHONFAULTHANDLER: '1',      // print traceback on segfault
+      PYTHONUNBUFFERED: '1'         // flush stdout/stderr immediately
     };
     
     // 如果使用虚拟环境，配置 Python 环境变量
@@ -213,7 +215,7 @@ function startBackend() {
     writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
     writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
 
-    backendProcess = spawn(pythonPath, [backendPath], {
+    backendProcess = spawn(pythonPath, ['-u', backendPath], {
       cwd: backendDir,
       env: env
     });
