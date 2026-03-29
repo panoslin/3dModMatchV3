@@ -56,13 +56,14 @@
           "**/bin/activate*",
           "**/lib/Python",
           "**/lib/libpython*",
-          "**/lib/python*/**/*",
-          "**/Scripts/python*",
-          "**/Scripts/activate*",
-          "**/Scripts/*.dll",
-          "**/Scripts/*._pth",
-          "**/Lib/**/*",
-          "**/DLLs/**/*"
+          "**/lib/python*/**/*"
+        ]
+      },
+      {
+        "from": "python-dist",
+        "to": "python-dist",
+        "filter": [
+          "**/*"
         ]
       },
       {
@@ -83,6 +84,8 @@
       "**/*",
       "!venv",
       "!venv/**/*",
+      "!python-dist",
+      "!python-dist/**/*",
       "!backend",
       "!backend/**/*",
       "!dist",

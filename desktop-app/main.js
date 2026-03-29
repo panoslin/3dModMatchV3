@@ -98,31 +98,45 @@ function startBackend() {
       return;
     }
 
-    // 检测Python路径 - 优先使用虚拟环境
+    // 检测Python路径
+    // Priority: python-dist (Windows flat) > venv (macOS) > system Python
     let pythonPath = null;
     const isWin = process.platform === 'win32';
-    const venvBin = isWin ? path.join('venv', 'Scripts', 'python.exe')
-                          : path.join('venv', 'bin', 'python3');
+
+    // Candidate paths (checked in order)
+    const candidates = isWin
+      ? [
+          // Windows: flat python-dist distribution (no venv structure)
+          path.join('python-dist', 'python.exe'),
+        ]
+      : [
+          // macOS: standard venv
+          path.join('venv', 'bin', 'python3'),
+        ];
 
     // In packaged app, extraResources land under process.resourcesPath (real FS).
-    // __dirname points inside app.asar where venv doesn't actually exist as a
-    // real executable, but Electron's patched fs.existsSync can return true for
-    // paths inside asar — so we must check resourcesPath FIRST.
-    const venvPythonPathRes = process.resourcesPath
-                              ? path.join(process.resourcesPath, venvBin)
-                              : null;
-    const venvPythonPathLocal = path.join(__dirname, venvBin);
+    // __dirname points inside app.asar where binaries don't actually exist,
+    // but Electron's patched fs.existsSync can return true — check resourcesPath FIRST.
+    for (const candidate of candidates) {
+      const resPath = process.resourcesPath
+                        ? path.join(process.resourcesPath, candidate)
+                        : null;
+      const localPath = path.join(__dirname, candidate);
 
-    // 优先尝试 resources 目录（打包后的真实路径）
-    if (venvPythonPathRes && fs.existsSync(venvPythonPathRes)) {
-      pythonPath = venvPythonPathRes;
-      console.log('使用打包后的虚拟环境Python:', pythonPath);
-    } else if (fs.existsSync(venvPythonPathLocal)) {
-      pythonPath = venvPythonPathLocal;
-      console.log('使用本地虚拟环境Python:', pythonPath);
-    } else {
+      if (resPath && fs.existsSync(resPath)) {
+        pythonPath = resPath;
+        console.log('使用打包的Python:', pythonPath);
+        break;
+      } else if (fs.existsSync(localPath)) {
+        pythonPath = localPath;
+        console.log('使用本地Python:', pythonPath);
+        break;
+      }
+    }
+
+    if (!pythonPath) {
       // 回退到系统Python
-      pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+      pythonPath = isWin ? 'python' : 'python3';
       try {
         execSync(`${pythonPath} --version`, { stdio: 'ignore' });
         console.log('使用系统Python:', pythonPath);
@@ -175,70 +189,56 @@ function startBackend() {
       PYTHONUNBUFFERED: '1'         // flush stdout/stderr immediately
     };
     
-    // 如果使用虚拟环境，配置 Python 环境变量
-    if (pythonPath.includes('venv')) {
-      const venvRoot = path.resolve(path.dirname(pythonPath), '..');
-      const isWinVenv = process.platform === 'win32';
-      console.log('使用虚拟环境:', venvRoot);
+    // 配置 Python 环境变量
+    const isPythonDist = pythonPath.includes('python-dist');
+    const isVenv = pythonPath.includes('venv');
 
-      // On Windows: ._pth file handles stdlib/site-packages paths (created at
-      // build time with relative paths).  No pyvenv.cfg or PYTHONHOME needed.
-      // On macOS: pyvenv.cfg is patched at runtime (app bundle is writable).
-      if (!isWinVenv) {
-        patchPyvenvCfg(venvRoot);
+    if (isPythonDist) {
+      // Windows flat distribution: ._pth file handles all paths.
+      // No pyvenv.cfg, no PYTHONHOME, no venv detection.
+      const distRoot = path.dirname(pythonPath);
+      delete env.PYTHONHOME;
+      delete env.PYTHONUSERBASE;
+      const sitePackagesPath = path.join(distRoot, 'Lib', 'site-packages');
+      if (fs.existsSync(sitePackagesPath)) {
+        env.PYTHONPATH = [sitePackagesPath, pythonPathEnv].join(path.delimiter);
       }
-
+      console.log('使用Python flat distribution:', distRoot);
+    } else if (isVenv) {
+      // macOS venv: patch pyvenv.cfg at runtime (app bundle is writable)
+      const venvRoot = path.resolve(path.dirname(pythonPath), '..');
+      patchPyvenvCfg(venvRoot);
       delete env.PYTHONHOME;
       delete env.PYTHONUSERBASE;
 
-      // Add site-packages to PYTHONPATH (belt-and-suspenders alongside ._pth)
       let sitePackagesPath = null;
-      const winSitePkg = path.join(venvRoot, 'Lib', 'site-packages');
-      if (fs.existsSync(winSitePkg)) {
-        sitePackagesPath = winSitePkg;
-      } else {
-        const libDir = path.join(venvRoot, 'lib');
-        if (fs.existsSync(libDir)) {
-          const pyDirs = fs.readdirSync(libDir).filter(d => d.startsWith('python'));
-          if (pyDirs.length > 0) {
-            const candidate = path.join(libDir, pyDirs[0], 'site-packages');
-            if (fs.existsSync(candidate)) sitePackagesPath = candidate;
-          }
+      const libDir = path.join(venvRoot, 'lib');
+      if (fs.existsSync(libDir)) {
+        const pyDirs = fs.readdirSync(libDir).filter(d => d.startsWith('python'));
+        if (pyDirs.length > 0) {
+          const candidate = path.join(libDir, pyDirs[0], 'site-packages');
+          if (fs.existsSync(candidate)) sitePackagesPath = candidate;
         }
       }
       if (sitePackagesPath) {
         env.PYTHONPATH = [sitePackagesPath, pythonPathEnv].join(path.delimiter);
-        console.log('添加虚拟环境site-packages到PYTHONPATH:', sitePackagesPath);
       }
+      console.log('使用虚拟环境:', venvRoot);
     }
 
     writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
     writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
 
-    // ── Comprehensive diagnostics ──────────────────────────────────────────
+    // ── Diagnostics ────────────────────────────────────────────────────────
     const pythonDir = path.dirname(pythonPath);
-    const venvRootDiag = path.resolve(pythonDir, '..');
 
-    // 1. List key files
+    // List files next to python.exe
     try {
       const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd|_pth|cfg)$/i.test(f));
-      writeLog('DIAG', `Scripts/ files: ${dirFiles.join(', ')}`);
+      writeLog('DIAG', `python dir: ${dirFiles.join(', ')}`);
     } catch (_) {}
 
-    // 2. Show pyvenv.cfg content
-    const pyvenvPath = path.join(venvRootDiag, 'pyvenv.cfg');
-    try {
-      if (fs.existsSync(pyvenvPath)) {
-        const content = fs.readFileSync(pyvenvPath, 'utf8').trim().replace(/\n/g, ' | ');
-        writeLog('DIAG', `pyvenv.cfg: ${content}`);
-      } else {
-        writeLog('DIAG', 'pyvenv.cfg: MISSING');
-      }
-    } catch (e) {
-      writeLog('DIAG', `pyvenv.cfg read error: ${e.message}`);
-    }
-
-    // 3. Show ._pth content
+    // Show ._pth content (if any)
     try {
       const pthFiles = fs.readdirSync(pythonDir).filter(f => f.endsWith('._pth'));
       pthFiles.forEach(f => {
@@ -247,50 +247,21 @@ function startBackend() {
       });
     } catch (_) {}
 
-    // 4. List Lib/ top-level (verify stdlib is present)
-    try {
-      const libDir = path.join(venvRootDiag, 'Lib');
-      const libItems = fs.readdirSync(libDir).slice(0, 40);
-      writeLog('DIAG', `Lib/ (first 40): ${libItems.join(', ')}`);
-    } catch (e) {
-      writeLog('DIAG', `Lib/ error: ${e.message}`);
-    }
-
-    // 5. List DLLs/
-    try {
-      const dllsDir = path.join(venvRootDiag, 'DLLs');
-      const dllFiles = fs.readdirSync(dllsDir);
-      writeLog('DIAG', `DLLs/ (${dllFiles.length} files): ${dllFiles.join(', ')}`);
-    } catch (e) {
-      writeLog('DIAG', `DLLs/ error: ${e.message}`);
-    }
-
-    // 6. Run multiple diagnostic python commands
-    const diagTests = [
-      { name: 'bare --version', args: ['--version'] },
-      { name: 'isolated print', args: ['-I', '-S', '-c', 'print("ok")'] },
-      { name: 'verbose init', args: ['-v', '-S', '-c', 'print("ok")'] },
-    ];
-    for (const test of diagTests) {
-      writeLog('DIAG', `Testing: ${test.name} ...`);
-      const result = spawnSync(pythonPath, test.args, {
-        env: env,
-        timeout: 15000,
-        encoding: 'utf8',
-        cwd: pythonDir
-      });
-      const stdout = (result.stdout || '').trim();
-      const stderr = (result.stderr || '').trim();
-      writeLog('DIAG', `  exit=${result.status} signal=${result.signal}`);
-      if (stdout) writeLog('DIAG', `  stdout: ${stdout.substring(0, 500)}`);
-      if (stderr) writeLog('DIAG', `  stderr: ${stderr.substring(0, 2000)}`);
-      if (result.error) writeLog('DIAG', `  error: ${result.error.message}`);
-
-      // If bare --version works, skip remaining tests
-      if (test.name === 'bare --version' && result.status === 0) {
-        writeLog('DIAG', 'Python interpreter OK, skipping further tests');
-        break;
-      }
+    // Quick version check
+    writeLog('DIAG', 'Testing: python --version ...');
+    const verResult = spawnSync(pythonPath, ['--version'], {
+      env: env,
+      timeout: 10000,
+      encoding: 'utf8',
+      cwd: pythonDir
+    });
+    if (verResult.status === 0) {
+      writeLog('DIAG', `Python OK: ${(verResult.stdout || '').trim()}`);
+    } else {
+      const stderr = (verResult.stderr || '').trim();
+      writeLog('DIAG', `exit=${verResult.status} signal=${verResult.signal}`);
+      if (stderr) writeLog('DIAG', `stderr: ${stderr.substring(0, 500)}`);
+      if (verResult.error) writeLog('DIAG', `error: ${verResult.error.message}`);
     }
 
     backendProcess = spawn(pythonPath, ['-u', backendPath], {

@@ -142,42 +142,58 @@ $SrcBizFwd = $SrcBiz.Replace('\','/')
 & $Python -c "import sys; sys.path.insert(0,'$SrcBizFwd'); import mesh_matcher; print('  import OK:', mesh_matcher.__file__)"
 if ($LASTEXITCODE -ne 0) { Fail "Module import smoke-test failed" }
 
-# ── 5. Bundled Python venv ────────────────────────────────────────────────────
-Info "Creating bundled venv..."
+# ── 5. Bundled Python (flat distribution — NOT a venv) ───────────────────────
+# We create a temporary venv to install pip packages, then restructure into a
+# flat Python distribution.  The "Scripts/" directory in a venv triggers
+# Python's venv detection at the C level, which requires pyvenv.cfg validation
+# BEFORE any flags (-I, -S) or ._pth files take effect.  A flat layout avoids
+# this entirely.
+Info "Creating bundled Python distribution..."
 
-if (Test-Path $VenvDir) { Remove-Item -Recurse -Force $VenvDir }
-& $Python -m venv --copies $VenvDir
+$PythonDir = Split-Path $Python
+$PyVerShort = (& $Python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
+
+# 5a. Create temporary venv for pip installs
+$TempVenv = Join-Path $DesktopDir "_tmpvenv"
+if (Test-Path $TempVenv) { Remove-Item -Recurse -Force $TempVenv }
+& $Python -m venv --copies $TempVenv
 if ($LASTEXITCODE -ne 0) { Fail "venv creation failed" }
 
-$VenvPy = Join-Path $VenvDir "Scripts\python.exe"
-& $VenvPy -m pip install --upgrade pip --quiet
-& $VenvPy -m pip install -r "$DesktopDir\backend\requirements.txt" --quiet
+$TempVenvPy = Join-Path $TempVenv "Scripts\python.exe"
+& $TempVenvPy -m pip install --upgrade pip --quiet
+& $TempVenvPy -m pip install -r "$DesktopDir\backend\requirements.txt" --quiet
 if ($LASTEXITCODE -ne 0) { Fail "pip install failed" }
-Info "Python packages installed into venv."
+Info "Python packages installed."
 
-# Copy Python DLLs next to the venv for portability
-$PythonDir = Split-Path $Python
-$DllDest   = Join-Path $VenvDir "DLLs"
+# 5b. Build flat distribution: python-dist/
+$DistDir = Join-Path $DesktopDir "python-dist"
+if (Test-Path $DistDir) { Remove-Item -Recurse -Force $DistDir }
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+# Copy executables from the SYSTEM Python (not the venv copy)
+Copy-Item (Join-Path $PythonDir "python.exe") $DistDir -Force
+Copy-Item (Join-Path $PythonDir "pythonw.exe") $DistDir -Force -ErrorAction SilentlyContinue
+# Copy all required DLLs next to python.exe
+Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $DistDir -Force
+Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $DistDir -Force
+Info "Copied python.exe and DLLs to python-dist\"
+
+# DLLs/ directory (extension modules + shared libs)
+$DllDest = Join-Path $DistDir "DLLs"
 New-Item -ItemType Directory -Force -Path $DllDest | Out-Null
-# Copy python3X.dll and any vc_redist DLLs from the Python install
-Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $DllDest -Force
-Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $DllDest -Force
-# Also copy DLLs from the system Python DLLs directory (sqlite3, ssl, etc.)
 $SysDlls = Join-Path $PythonDir "DLLs"
 if (Test-Path $SysDlls) {
     Get-ChildItem $SysDlls -Filter "*.pyd" | Copy-Item -Destination $DllDest -Force
     Get-ChildItem $SysDlls -Filter "*.dll" | Copy-Item -Destination $DllDest -Force
-    Info "Copied system Python DLLs to venv\DLLs\"
+    Info "Copied system DLLs/ to python-dist\DLLs\"
 }
-Info "Copied Python DLLs to venv\DLLs\"
 
-# Bundle stdlib into the venv for portability (end-user may not have Python installed)
-$PyVer = & $Python -c "import sys; print(f'python{sys.version_info.major}{sys.version_info.minor}')"
+# Lib/ directory — stdlib from system Python
 $SysLib = Join-Path $PythonDir "Lib"
-$VenvLib = Join-Path $VenvDir "Lib"
+$DistLib = Join-Path $DistDir "Lib"
+New-Item -ItemType Directory -Force -Path $DistLib | Out-Null
 if (Test-Path $SysLib) {
-    Info "Copying stdlib into venv\Lib\ ..."
-    # Copy stdlib .py files (excluding site-packages, test, tkinter to save space)
+    Info "Copying stdlib into python-dist\Lib\ ..."
     $excludeDirs = @("site-packages", "test", "tests", "tkinter", "turtledemo", "idlelib", "__pycache__")
     Get-ChildItem $SysLib -Recurse | Where-Object {
         $relPath = $_.FullName.Substring($SysLib.Length + 1)
@@ -188,7 +204,7 @@ if (Test-Path $SysLib) {
         -not $skip
     } | ForEach-Object {
         $relPath = $_.FullName.Substring($SysLib.Length + 1)
-        $destPath = Join-Path $VenvLib $relPath
+        $destPath = Join-Path $DistLib $relPath
         if ($_.PSIsContainer) {
             New-Item -ItemType Directory -Force -Path $destPath | Out-Null
         } else {
@@ -197,48 +213,32 @@ if (Test-Path $SysLib) {
             Copy-Item $_.FullName $destPath -Force
         }
     }
-    Info "Stdlib copied to venv\Lib\"
+    Info "Stdlib copied."
 } else {
     Warn "Could not find stdlib at $SysLib — app may not be portable"
 }
 
-# ── 5.1 Make venv fully self-contained (._pth file) ─────────────────────────
-# Use Python's ._pth mechanism: when pythonXY._pth exists next to pythonXY.dll,
-# Python bypasses ALL other path resolution (pyvenv.cfg, PYTHONHOME, registry)
-# and uses ONLY the listed paths.  This is the official way to embed Python.
-Info "Creating ._pth file for self-contained path resolution..."
+# site-packages from the temp venv
+$TempSitePkg = Join-Path $TempVenv "Lib\site-packages"
+$DistSitePkg = Join-Path $DistLib "site-packages"
+if (Test-Path $TempSitePkg) {
+    Copy-Item $TempSitePkg $DistSitePkg -Recurse -Force
+    Info "Copied site-packages."
+}
 
-$PyVerShort = (& $Python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
-$PthFile = Join-Path $VenvDir "Scripts\python${PyVerShort}._pth"
+# 5c. Create ._pth file (paths relative to python.exe directory)
+$PthFile = Join-Path $DistDir "python${PyVerShort}._pth"
 @"
-.
-../Lib
-../Lib/site-packages
-../DLLs
+Lib
+Lib/site-packages
+DLLs
 import site
 "@ | Set-Content $PthFile -Encoding ASCII
 Info "Created python${PyVerShort}._pth"
 
-# Keep pyvenv.cfg — Python 3.11 requires it to exist (exit code 106 if missing).
-# Rewrite "home" to the venv's own Scripts dir.  The NSIS installer will
-# overwrite it again with the actual $INSTDIR path at install time.
-$PyvenvCfg = Join-Path $VenvDir "pyvenv.cfg"
-$VenvScriptsAbs = Join-Path $VenvDir "Scripts"
-if (Test-Path $PyvenvCfg) {
-    $content = Get-Content $PyvenvCfg -Raw
-    $content = $content -replace '(?m)^home\s*=.*', "home = $VenvScriptsAbs"
-    Set-Content $PyvenvCfg $content -NoNewline
-} else {
-    "home = $VenvScriptsAbs`ninclude-system-site-packages = false`n" | Set-Content $PyvenvCfg -NoNewline
-}
-Info "pyvenv.cfg kept (home = $VenvScriptsAbs)"
-
-# Python needs python3.dll and python3XX.dll next to (or above) the executable.
-# They were copied to DLLs/ earlier; also place them alongside Scripts\python.exe.
-$VenvScriptsDir = Join-Path $VenvDir "Scripts"
-Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $VenvScriptsDir -Force
-Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $VenvScriptsDir -Force
-Info "Copied python DLLs to venv\Scripts\"
+# 5d. Clean up temp venv
+Remove-Item -Recurse -Force $TempVenv
+Info "Python distribution ready: python-dist\"
 
 # ── 6. Node dependencies ──────────────────────────────────────────────────────
 Info "Installing Node.js dependencies..."
