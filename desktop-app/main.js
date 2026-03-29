@@ -186,7 +186,8 @@ function startBackend() {
       PORT: BACKEND_PORT.toString(),
       PYTHONPATH: pythonPathEnv,
       PYTHONFAULTHANDLER: '1',      // print traceback on segfault
-      PYTHONUNBUFFERED: '1'         // flush stdout/stderr immediately
+      PYTHONUNBUFFERED: '1',        // flush stdout/stderr immediately
+      PYTHONIOENCODING: 'utf-8'     // prevent GBK encode errors on Chinese Windows
     };
     
     // 配置 Python 环境变量

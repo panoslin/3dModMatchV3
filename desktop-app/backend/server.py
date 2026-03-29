@@ -7,6 +7,13 @@
 
 import os
 import sys
+
+# Windows 中文系统默认 console 编码为 GBK，无法输出 emoji 等 Unicode 字符。
+# 强制将 stdout/stderr 设为 UTF-8 以避免 UnicodeEncodeError。
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 import json
 import struct
 import sqlite3  # Python标准库，无需额外安装
