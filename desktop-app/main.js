@@ -49,6 +49,33 @@ function writeLog(prefix, data) {
   }
 }
 
+// Patch pyvenv.cfg so the bundled venv works on ANY machine.
+// The build-time "home" points to the CI runner's Python — rewrite it
+// to the venv's own Scripts/ (or bin/) directory on THIS machine.
+function patchPyvenvCfg(venvRoot) {
+  const cfgPath = path.join(venvRoot, 'pyvenv.cfg');
+  const isWin = process.platform === 'win32';
+  const binDir = isWin ? path.join(venvRoot, 'Scripts') : path.join(venvRoot, 'bin');
+
+  try {
+    if (!fs.existsSync(cfgPath)) {
+      // Create a minimal pyvenv.cfg — Python requires it when running from a venv
+      const content = `home = ${binDir}\ninclude-system-site-packages = false\n`;
+      fs.writeFileSync(cfgPath, content, 'utf8');
+      writeLog('INFO', `Created pyvenv.cfg: home = ${binDir}`);
+      return;
+    }
+    const original = fs.readFileSync(cfgPath, 'utf8');
+    const patched = original.replace(/^home\s*=.*/m, `home = ${binDir}`);
+    if (patched !== original) {
+      fs.writeFileSync(cfgPath, patched, 'utf8');
+      writeLog('INFO', `Patched pyvenv.cfg: home = ${binDir}`);
+    }
+  } catch (err) {
+    writeLog('WARN', `Failed to patch pyvenv.cfg: ${err.message}`);
+  }
+}
+
 // 启动后端Python服务
 function startBackend() {
   return new Promise((resolve, reject) => {
@@ -151,9 +178,11 @@ function startBackend() {
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
       console.log('使用虚拟环境:', venvRoot);
 
-      // Both platforms bundle stdlib into the venv and remove pyvenv.cfg
-      // (which would reference the build machine's Python path).
-      // PYTHONHOME tells the embedded interpreter where to find Lib/ and DLLs/.
+      // pyvenv.cfg's "home" was written at build time on the CI machine.
+      // Rewrite it to point to this machine's actual venv Scripts/bin dir.
+      patchPyvenvCfg(venvRoot);
+
+      // PYTHONHOME tells the interpreter where to find Lib/ and DLLs/.
       env.PYTHONHOME = venvRoot;
       delete env.PYTHONUSERBASE; // prevent user site-packages interference
       console.log('设置 PYTHONHOME:', venvRoot);

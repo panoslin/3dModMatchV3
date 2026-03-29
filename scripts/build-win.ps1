@@ -206,13 +206,22 @@ if (Test-Path $SysLib) {
 # pyvenv.cfg records the build machine's Python path in the "home" key.
 # On the end-user machine that path won't exist, causing:
 #   "No Python at C:\hostedtoolcache\..."
-# Since we bundle stdlib + DLLs + site-packages and set PYTHONHOME at runtime,
-# pyvenv.cfg is not needed.  Removing it prevents the early "home" validation
-# that fails before any environment variable can take effect.
-Info "Removing pyvenv.cfg (standalone mode — PYTHONHOME set at runtime)..."
+# Rewrite "home" to point to the venv's own Scripts/ directory.
+# The Electron main process will patch it again at runtime to the actual
+# install path, but the file MUST exist (Python exit code 106 if missing).
+Info "Patching pyvenv.cfg home to venv-relative path..."
 
 $PyvenvCfg = Join-Path $VenvDir "pyvenv.cfg"
-if (Test-Path $PyvenvCfg) { Remove-Item $PyvenvCfg -Force }
+$VenvScriptsAbs = Join-Path $VenvDir "Scripts"
+if (Test-Path $PyvenvCfg) {
+    $content = Get-Content $PyvenvCfg -Raw
+    $content = $content -replace '(?m)^home\s*=.*', "home = $VenvScriptsAbs"
+    Set-Content $PyvenvCfg $content -NoNewline
+    Info "Patched pyvenv.cfg: home = $VenvScriptsAbs"
+} else {
+    "home = $VenvScriptsAbs`ninclude-system-site-packages = false`n" | Set-Content $PyvenvCfg -NoNewline
+    Info "Created pyvenv.cfg: home = $VenvScriptsAbs"
+}
 
 # Python needs python3.dll and python3XX.dll next to (or above) the executable.
 # They were copied to DLLs/ earlier; also place them alongside Scripts\python.exe.

@@ -166,16 +166,20 @@ fi
 "$VENV_PY" -m pip install -r "$DESKTOP_DIR/backend/requirements.txt" --quiet
 info "Python packages installed into venv."
 
-# ── 4.2 Remove pyvenv.cfg for portability ────────────────────────────────
+# ── 4.2 Patch pyvenv.cfg for portability ─────────────────────────────────
 # pyvenv.cfg records the build machine's Python "home" path (e.g.
-# /opt/homebrew/...).  On end-user machines that path won't exist,
-# and Python validates it before any env var can take effect.
-# Since we bundle stdlib + dylib and set PYTHONHOME at runtime,
-# pyvenv.cfg is not needed.
+# /opt/homebrew/...).  On end-user machines that path won't exist.
+# Rewrite "home" to point to the venv's own bin/ directory.
+# The Electron main process will patch it again at runtime to the actual
+# install path, but the file MUST exist (Python exit code 106 if missing).
 PYVENV_CFG="$VENV_DIR/pyvenv.cfg"
+VENV_BIN_ABS="$VENV_DIR/bin"
 if [[ -f "$PYVENV_CFG" ]]; then
-    rm -f "$PYVENV_CFG"
-    info "Removed pyvenv.cfg (standalone mode)"
+    sed -i '' "s|^home *=.*|home = ${VENV_BIN_ABS}|" "$PYVENV_CFG"
+    info "Patched pyvenv.cfg: home = ${VENV_BIN_ABS}"
+else
+    printf 'home = %s\ninclude-system-site-packages = false\n' "$VENV_BIN_ABS" > "$PYVENV_CFG"
+    info "Created pyvenv.cfg: home = ${VENV_BIN_ABS}"
 fi
 
 # ── 5. Node dependencies ──────────────────────────────────────────────────────
