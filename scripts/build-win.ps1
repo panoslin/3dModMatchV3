@@ -202,26 +202,28 @@ if (Test-Path $SysLib) {
     Warn "Could not find stdlib at $SysLib — app may not be portable"
 }
 
-# ── 5.1 Make venv fully self-contained (no reference to build-host Python) ────
-# pyvenv.cfg records the build machine's Python path in the "home" key.
-# On the end-user machine that path won't exist, causing:
-#   "No Python at C:\hostedtoolcache\..."
-# Rewrite "home" to point to the venv's own Scripts/ directory.
-# The Electron main process will patch it again at runtime to the actual
-# install path, but the file MUST exist (Python exit code 106 if missing).
-Info "Patching pyvenv.cfg home to venv-relative path..."
+# ── 5.1 Make venv fully self-contained (._pth file) ─────────────────────────
+# Use Python's ._pth mechanism: when pythonXY._pth exists next to pythonXY.dll,
+# Python bypasses ALL other path resolution (pyvenv.cfg, PYTHONHOME, registry)
+# and uses ONLY the listed paths.  This is the official way to embed Python.
+Info "Creating ._pth file for self-contained path resolution..."
 
+$PyVerShort = (& $Python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')").Trim()
+$PthFile = Join-Path $VenvDir "Scripts\python${PyVerShort}._pth"
+@"
+.
+../Lib
+../Lib/site-packages
+../DLLs
+import site
+"@ | Set-Content $PthFile -Encoding ASCII
+Info "Created python${PyVerShort}._pth"
+
+# Remove pyvenv.cfg — no longer needed (._pth takes precedence and we don't
+# want Python's venv detection to interfere).
 $PyvenvCfg = Join-Path $VenvDir "pyvenv.cfg"
-$VenvScriptsAbs = Join-Path $VenvDir "Scripts"
-if (Test-Path $PyvenvCfg) {
-    $content = Get-Content $PyvenvCfg -Raw
-    $content = $content -replace '(?m)^home\s*=.*', "home = $VenvScriptsAbs"
-    Set-Content $PyvenvCfg $content -NoNewline
-    Info "Patched pyvenv.cfg: home = $VenvScriptsAbs"
-} else {
-    "home = $VenvScriptsAbs`ninclude-system-site-packages = false`n" | Set-Content $PyvenvCfg -NoNewline
-    Info "Created pyvenv.cfg: home = $VenvScriptsAbs"
-}
+if (Test-Path $PyvenvCfg) { Remove-Item $PyvenvCfg -Force }
+Info "Removed pyvenv.cfg (._pth mode)"
 
 # Python needs python3.dll and python3XX.dll next to (or above) the executable.
 # They were copied to DLLs/ earlier; also place them alongside Scripts\python.exe.

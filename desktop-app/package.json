@@ -51,7 +51,6 @@
         "from": "venv",
         "to": "venv",
         "filter": [
-          "pyvenv.cfg",
           "**/bin/python*",
           "**/bin/activate*",
           "**/lib/Python",
@@ -60,6 +59,7 @@
           "**/Scripts/python*",
           "**/Scripts/activate*",
           "**/Scripts/*.dll",
+          "**/Scripts/*._pth",
           "**/Lib/**/*",
           "**/DLLs/**/*"
         ]

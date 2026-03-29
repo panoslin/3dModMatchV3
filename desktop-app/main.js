@@ -178,21 +178,20 @@ function startBackend() {
     // 如果使用虚拟环境，配置 Python 环境变量
     if (pythonPath.includes('venv')) {
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
+      const isWinVenv = process.platform === 'win32';
       console.log('使用虚拟环境:', venvRoot);
 
-      // pyvenv.cfg's "home" was written at build time on the CI machine.
-      // Rewrite it to point to this machine's actual venv Scripts/bin dir.
-      patchPyvenvCfg(venvRoot);
+      // On Windows: ._pth file handles stdlib/site-packages paths (created at
+      // build time with relative paths).  No pyvenv.cfg or PYTHONHOME needed.
+      // On macOS: pyvenv.cfg is patched at runtime (app bundle is writable).
+      if (!isWinVenv) {
+        patchPyvenvCfg(venvRoot);
+      }
 
-      // pyvenv.cfg (patched by NSIS installer or patchPyvenvCfg above) tells
-      // Python where "home" is.  Do NOT set PYTHONHOME — it conflicts with
-      // pyvenv.cfg and can cause init crashes on machines without system Python.
       delete env.PYTHONHOME;
-      delete env.PYTHONUSERBASE; // prevent user site-packages interference
+      delete env.PYTHONUSERBASE;
 
-      // Add site-packages to PYTHONPATH
-      // macOS/Linux: venv/lib/pythonX.Y/site-packages
-      // Windows:     venv/Lib/site-packages
+      // Add site-packages to PYTHONPATH (belt-and-suspenders alongside ._pth)
       let sitePackagesPath = null;
       const winSitePkg = path.join(venvRoot, 'Lib', 'site-packages');
       if (fs.existsSync(winSitePkg)) {
@@ -212,35 +211,27 @@ function startBackend() {
         console.log('添加虚拟环境site-packages到PYTHONPATH:', sitePackagesPath);
       }
     }
-    
+
     writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
     writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
 
-    // Diagnostic: list DLLs next to python.exe and in DLLs/ directory
+    // Diagnostic: list key files next to python executable
     const pythonDir = path.dirname(pythonPath);
     try {
-      const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd)$/i.test(f));
+      const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd|_pth)$/i.test(f));
       writeLog('INFO', `Python dir files: ${dirFiles.join(', ')}`);
     } catch (_) {}
-    const dllsDir = path.join(path.dirname(pythonDir), 'DLLs');
-    try {
-      const dllFiles = fs.readdirSync(dllsDir).slice(0, 30);
-      writeLog('INFO', `DLLs dir (first 30): ${dllFiles.join(', ')}`);
-    } catch (e) {
-      writeLog('WARN', `DLLs dir missing: ${e.message}`);
-    }
 
     // Quick sanity check: can the interpreter even start?
     try {
       const ver = execSync(`"${pythonPath}" -c "import sys; print(sys.version)"`, {
         env: env,
-        timeout: 30000,
+        timeout: 15000,
         encoding: 'utf8'
       }).trim();
       writeLog('INFO', `Python version check OK: ${ver}`);
     } catch (e) {
       writeLog('FATAL', `Python cannot start: ${e.message}`);
-      // Continue anyway — spawn below will capture more details
     }
 
     backendProcess = spawn(pythonPath, ['-u', backendPath], {
