@@ -184,10 +184,11 @@ function startBackend() {
       // Rewrite it to point to this machine's actual venv Scripts/bin dir.
       patchPyvenvCfg(venvRoot);
 
-      // PYTHONHOME tells the interpreter where to find Lib/ and DLLs/.
-      env.PYTHONHOME = venvRoot;
+      // pyvenv.cfg (patched by NSIS installer or patchPyvenvCfg above) tells
+      // Python where "home" is.  Do NOT set PYTHONHOME — it conflicts with
+      // pyvenv.cfg and can cause init crashes on machines without system Python.
+      delete env.PYTHONHOME;
       delete env.PYTHONUSERBASE; // prevent user site-packages interference
-      console.log('设置 PYTHONHOME:', venvRoot);
 
       // Add site-packages to PYTHONPATH
       // macOS/Linux: venv/lib/pythonX.Y/site-packages
@@ -214,6 +215,33 @@ function startBackend() {
     
     writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}`);
     writeLog('INFO', `PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
+
+    // Diagnostic: list DLLs next to python.exe and in DLLs/ directory
+    const pythonDir = path.dirname(pythonPath);
+    try {
+      const dirFiles = fs.readdirSync(pythonDir).filter(f => /\.(dll|exe|pyd)$/i.test(f));
+      writeLog('INFO', `Python dir files: ${dirFiles.join(', ')}`);
+    } catch (_) {}
+    const dllsDir = path.join(path.dirname(pythonDir), 'DLLs');
+    try {
+      const dllFiles = fs.readdirSync(dllsDir).slice(0, 30);
+      writeLog('INFO', `DLLs dir (first 30): ${dllFiles.join(', ')}`);
+    } catch (e) {
+      writeLog('WARN', `DLLs dir missing: ${e.message}`);
+    }
+
+    // Quick sanity check: can the interpreter even start?
+    try {
+      const ver = execSync(`"${pythonPath}" -c "import sys; print(sys.version)"`, {
+        env: env,
+        timeout: 30000,
+        encoding: 'utf8'
+      }).trim();
+      writeLog('INFO', `Python version check OK: ${ver}`);
+    } catch (e) {
+      writeLog('FATAL', `Python cannot start: ${e.message}`);
+      // Continue anyway — spawn below will capture more details
+    }
 
     backendProcess = spawn(pythonPath, ['-u', backendPath], {
       cwd: backendDir,
