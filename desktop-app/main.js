@@ -8,6 +8,47 @@ let mainWindow;
 let backendProcess = null;
 const BACKEND_PORT = 5000;
 
+// ── Logging ─────────────────────────────────────────────────────────────────
+// Daily log files under userData/logs/, auto-purge files older than 90 days.
+const LOG_RETENTION_DAYS = 90;
+let logStream = null;
+
+function initLogging() {
+  const logDir = path.join(app.getPath('userData'), 'logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+
+  // Purge old logs
+  try {
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 86400000;
+    fs.readdirSync(logDir)
+      .filter(f => f.endsWith('.log'))
+      .forEach(f => {
+        const fullPath = path.join(logDir, f);
+        try {
+          if (fs.statSync(fullPath).mtimeMs < cutoff) fs.unlinkSync(fullPath);
+        } catch (_) { /* ignore */ }
+      });
+  } catch (_) { /* ignore */ }
+
+  // Open today's log file (append mode)
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const logPath = path.join(logDir, `backend-${today}.log`);
+  logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+  const header = `\n${'='.repeat(60)}\nSession started: ${new Date().toISOString()}\n${'='.repeat(60)}\n`;
+  logStream.write(header);
+  console.log(`日志文件: ${logPath}`);
+}
+
+function writeLog(prefix, data) {
+  const text = data.toString();
+  if (logStream) {
+    const ts = new Date().toISOString().slice(11, 23);
+    const lines = text.split('\n').filter(l => l.length > 0);
+    lines.forEach(line => logStream.write(`[${ts}] ${prefix} ${line}\n`));
+  }
+}
+
 // 启动后端Python服务
 function startBackend() {
   return new Promise((resolve, reject) => {
@@ -95,6 +136,8 @@ function startBackend() {
     console.log('后端路径:', backendPath);
     console.log('Python路径:', pythonPath);
     console.log('工作目录:', backendDir);
+    writeLog('INFO', `启动后端: python=${pythonPath}, backend=${backendPath}, cwd=${backendDir}`);
+    writeLog('INFO', `PYTHONHOME=${env.PYTHONHOME || '(unset)'}, PYTHONPATH=${env.PYTHONPATH || '(unset)'}`);
     
     // 设置环境变量，优先使用虚拟环境的site-packages
     const env = {
@@ -109,17 +152,12 @@ function startBackend() {
       const venvRoot = path.resolve(path.dirname(pythonPath), '..');
       console.log('使用虚拟环境:', venvRoot);
 
-      // macOS: stdlib is bundled under venv/lib/pythonX.Y/ and the binary's
-      //        dylib reference is patched — pyvenv.cfg handles resolution.
-      //        Setting PYTHONHOME breaks it, so we clear it.
-      // Windows: stdlib is bundled under venv/Lib/ by the build script.
-      //          The copied python.exe needs PYTHONHOME to find Lib/.
-      if (isWin) {
-        env.PYTHONHOME = venvRoot;
-        console.log('设置 PYTHONHOME:', venvRoot);
-      } else {
-        delete env.PYTHONHOME;
-      }
+      // Both platforms bundle stdlib into the venv and remove pyvenv.cfg
+      // (which would reference the build machine's Python path).
+      // PYTHONHOME tells the embedded interpreter where to find Lib/ and DLLs/.
+      env.PYTHONHOME = venvRoot;
+      delete env.PYTHONUSERBASE; // prevent user site-packages interference
+      console.log('设置 PYTHONHOME:', venvRoot);
 
       // Add site-packages to PYTHONPATH
       // macOS/Linux: venv/lib/pythonX.Y/site-packages
@@ -160,12 +198,14 @@ function startBackend() {
     backendProcess.stdout.on('data', (data) => {
       const output = data.toString();
       console.log(`后端输出: ${output}`);
-      
+      writeLog('OUT', output);
+
       // 检测后端是否已启动
       if (output.includes('启动后端服务在') || output.includes('Running on')) {
         backendReady = true;
         clearTimeout(startupTimeout);
         console.log('✅ 后端服务已启动');
+        writeLog('INFO', '后端服务已启动');
         resolve();
       }
     });
@@ -173,13 +213,14 @@ function startBackend() {
     backendProcess.stderr.on('data', (data) => {
       const error = data.toString();
       console.error(`后端错误: ${error}`);
-      
+      writeLog('ERR', error);
+
       // 收集所有错误信息
       if (!backendProcess.errorBuffer) {
         backendProcess.errorBuffer = '';
       }
       backendProcess.errorBuffer += error;
-      
+
       // 某些错误信息是正常的（如警告），不一定是致命错误
       if (error.includes('Error') || error.includes('Traceback') || error.includes('ModuleNotFoundError')) {
         console.error('后端启动可能失败:', error);
@@ -188,15 +229,18 @@ function startBackend() {
 
     backendProcess.on('close', (code) => {
       console.log(`后端进程退出，代码: ${code}`);
+      writeLog('INFO', `后端进程退出，代码: ${code}`);
       if (code !== 0 && code !== null) {
         const errorMsg = backendProcess.errorBuffer || `后端进程异常退出，代码: ${code}`;
         console.error('后端启动失败详情:', errorMsg);
+        writeLog('FATAL', errorMsg);
         reject(new Error(`后端进程异常退出，代码: ${code}\n\n错误详情:\n${errorMsg.substring(0, 500)}`));
       }
     });
 
     backendProcess.on('error', (error) => {
       console.error('启动后端服务失败:', error);
+      writeLog('FATAL', `spawn error: ${error.message}`);
       clearTimeout(startupTimeout);
       reject(error);
     });
@@ -247,20 +291,25 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Initialize daily log file (purge files > 90 days old)
+  initLogging();
+
   try {
     // 启动后端服务
     await startBackend();
     console.log('后端服务启动成功');
   } catch (error) {
     console.error('后端服务启动失败:', error);
+    writeLog('FATAL', `启动失败: ${error.message || error}`);
     // 即使后端启动失败，也创建窗口，让用户知道问题
+    const logDir = path.join(app.getPath('userData'), 'logs');
     const errorDetails = error.message || error.toString();
     dialog.showErrorBox(
       '后端服务启动失败',
-      `无法启动后端服务：${errorDetails}\n\n请检查：\n1. Python虚拟环境是否正确\n2. 依赖包是否已安装\n3. 查看控制台日志获取详细信息\n\n应用将继续运行，但部分功能可能不可用。`
+      `无法启动后端服务：${errorDetails}\n\n请检查：\n1. Python虚拟环境是否正确\n2. 依赖包是否已安装\n3. 查看日志目录获取详细信息:\n   ${logDir}\n\n应用将继续运行，但部分功能可能不可用。`
     );
   }
-  
+
   // 创建窗口
   createWindow();
 
@@ -280,6 +329,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopBackend();
+  if (logStream) {
+    writeLog('INFO', '应用退出');
+    logStream.end();
+    logStream = null;
+  }
 });
 
 // IPC处理程序

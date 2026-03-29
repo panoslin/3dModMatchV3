@@ -202,6 +202,25 @@ if (Test-Path $SysLib) {
     Warn "Could not find stdlib at $SysLib — app may not be portable"
 }
 
+# ── 5.1 Make venv fully self-contained (no reference to build-host Python) ────
+# pyvenv.cfg records the build machine's Python path in the "home" key.
+# On the end-user machine that path won't exist, causing:
+#   "No Python at C:\hostedtoolcache\..."
+# Since we bundle stdlib + DLLs + site-packages and set PYTHONHOME at runtime,
+# pyvenv.cfg is not needed.  Removing it prevents the early "home" validation
+# that fails before any environment variable can take effect.
+Info "Removing pyvenv.cfg (standalone mode — PYTHONHOME set at runtime)..."
+
+$PyvenvCfg = Join-Path $VenvDir "pyvenv.cfg"
+if (Test-Path $PyvenvCfg) { Remove-Item $PyvenvCfg -Force }
+
+# Python needs python3.dll and python3XX.dll next to (or above) the executable.
+# They were copied to DLLs/ earlier; also place them alongside Scripts\python.exe.
+$VenvScriptsDir = Join-Path $VenvDir "Scripts"
+Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $VenvScriptsDir -Force
+Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $VenvScriptsDir -Force
+Info "Copied python DLLs to venv\Scripts\"
+
 # ── 6. Node dependencies ──────────────────────────────────────────────────────
 Info "Installing Node.js dependencies..."
 Set-Location $DesktopDir

@@ -166,6 +166,18 @@ fi
 "$VENV_PY" -m pip install -r "$DESKTOP_DIR/backend/requirements.txt" --quiet
 info "Python packages installed into venv."
 
+# ── 4.2 Remove pyvenv.cfg for portability ────────────────────────────────
+# pyvenv.cfg records the build machine's Python "home" path (e.g.
+# /opt/homebrew/...).  On end-user machines that path won't exist,
+# and Python validates it before any env var can take effect.
+# Since we bundle stdlib + dylib and set PYTHONHOME at runtime,
+# pyvenv.cfg is not needed.
+PYVENV_CFG="$VENV_DIR/pyvenv.cfg"
+if [[ -f "$PYVENV_CFG" ]]; then
+    rm -f "$PYVENV_CFG"
+    info "Removed pyvenv.cfg (standalone mode)"
+fi
+
 # ── 5. Node dependencies ──────────────────────────────────────────────────────
 info "Installing Node.js dependencies..."
 cd "$DESKTOP_DIR"
