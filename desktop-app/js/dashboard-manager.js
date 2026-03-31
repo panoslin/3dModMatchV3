@@ -2,6 +2,7 @@
 class DashboardManager {
   constructor() {
     this._refreshTimer = null;
+    this._sysTimer = null;
     this._days = 30;
     this._lastRefresh = null;
     this._setupControls();
@@ -40,6 +41,7 @@ class DashboardManager {
   startAutoRefresh() {
     this.load();
     this._refreshTimer = setInterval(() => this.load(), 30_000);
+    this._sysTimer = setInterval(() => this._pollSystem(), 5_000);
   }
 
   stopAutoRefresh() {
@@ -47,6 +49,17 @@ class DashboardManager {
       clearInterval(this._refreshTimer);
       this._refreshTimer = null;
     }
+    if (this._sysTimer) {
+      clearInterval(this._sysTimer);
+      this._sysTimer = null;
+    }
+  }
+
+  async _pollSystem() {
+    try {
+      const sys = await API.request('/system-status');
+      this._renderSystem(sys);
+    } catch (_) { /* ignore */ }
   }
 
   _updateRefreshIndicator() {
@@ -155,6 +168,7 @@ class DashboardManager {
           <div class="heatmap-bar-wrap">
             <div class="heatmap-bar" style="width:${barW}%"></div>
           </div>
+          <div class="heatmap-volume">${h.volume ? (h.volume / 1000).toFixed(1) + ' cm³' : '—'}</div>
           <div class="heatmap-count">${h.total} 次</div>
           <div class="heatmap-hitrate" style="color:${hitRateColor}">${h.hit_rate}%</div>
           <div class="heatmap-lastused">${this._relativeTime(h.last_used)}</div>
@@ -166,6 +180,7 @@ class DashboardManager {
         <div class="heatmap-rank">#</div>
         <div class="heatmap-name">粗胚名称</div>
         <div class="heatmap-bar-wrap"></div>
+        <div class="heatmap-volume">体积</div>
         <div class="heatmap-count">次数</div>
         <div class="heatmap-hitrate">命中率</div>
         <div class="heatmap-lastused">最近使用</div>

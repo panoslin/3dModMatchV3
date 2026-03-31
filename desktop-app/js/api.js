@@ -73,6 +73,13 @@ class API {
     });
   }
 
+  static async renameCategory(id, name) {
+    return this.request(`/categories/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    });
+  }
+
   static async deleteCategory(id) {
     return this.request(`/categories/${id}`, {
       method: 'DELETE',

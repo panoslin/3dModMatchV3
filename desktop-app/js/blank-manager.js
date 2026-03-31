@@ -156,11 +156,13 @@ class BlankManager {
         <button class="sidebar-cat-toggle ${hasChildren && !isExpanded ? 'collapsed' : ''}" style="${hasChildren ? '' : 'visibility:hidden'}">▾</button>
         <span class="sidebar-cat-label" title="${this.escapeHtml(node.path || node.name)}">${this.escapeHtml(node.name)}</span>
         <span class="sidebar-cat-count">${displayCount}</span>
+        <button class="sidebar-cat-action sidebar-cat-rename" title="重命名分类">✎</button>
         <button class="sidebar-cat-action" title="删除分类">×</button>
       `;
 
       const toggle = item.querySelector('.sidebar-cat-toggle');
-      const deleteBtn = item.querySelector('.sidebar-cat-action');
+      const renameBtn = item.querySelector('.sidebar-cat-rename');
+      const deleteBtn = item.querySelector('.sidebar-cat-action:last-child');
 
       if (hasChildren) {
         toggle.addEventListener('click', (e) => {
@@ -174,6 +176,19 @@ class BlankManager {
           this.renderCategorySidebar();
         });
       }
+
+      renameBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const newName = await this._showRenameDialog(node.name);
+        if (!newName) return;
+        try {
+          await API.renameCategory(node.id, newName);
+          await this.loadCategories();
+          this.renderCategorySidebar();
+        } catch (error) {
+          alert('重命名失败: ' + error.message);
+        }
+      });
 
       deleteBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -191,7 +206,7 @@ class BlankManager {
       });
 
       item.addEventListener('click', (e) => {
-        if (e.target === toggle || e.target === deleteBtn) return;
+        if (e.target === toggle || e.target === deleteBtn || e.target === renameBtn) return;
         this.activeSidebarCategoryId = node.id;
         this.currentPage = 1;
         this.loadBlanks();
@@ -594,6 +609,22 @@ class BlankManager {
       const actions = document.createElement('div');
       actions.className = 'cat-tree-row-actions';
 
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'cat-tree-row-btn';
+      renameBtn.textContent = '重命名';
+      renameBtn.onclick = async () => {
+        const newName = await this._showRenameDialog(category.name);
+        if (!newName) return;
+        try {
+          await API.renameCategory(category.id, newName);
+          await this.loadCategories();
+          await this.renderCategoryTree();
+          this.renderCategorySidebar();
+        } catch (error) {
+          alert('重命名失败: ' + error.message);
+        }
+      };
+
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'cat-tree-row-btn danger';
       deleteBtn.textContent = '删除';
@@ -612,6 +643,7 @@ class BlankManager {
         }
       };
 
+      actions.appendChild(renameBtn);
       actions.appendChild(deleteBtn);
       row.appendChild(nameEl);
       row.appendChild(countEl);
@@ -785,5 +817,46 @@ class BlankManager {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  _showRenameDialog(currentName) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('rename-category-modal');
+      const input = document.getElementById('rename-category-name');
+      const submitBtn = document.getElementById('rename-category-submit');
+      const cancelBtn = document.getElementById('rename-category-cancel');
+      const closeBtn = document.getElementById('rename-category-close');
+
+      input.value = currentName;
+      modal.classList.add('active');
+      input.focus();
+      input.select();
+
+      const cleanup = () => {
+        modal.classList.remove('active');
+        submitBtn.replaceWith(submitBtn.cloneNode(true));
+        cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+        closeBtn.replaceWith(closeBtn.cloneNode(true));
+        input.removeEventListener('keydown', onKey);
+      };
+
+      const submit = () => {
+        const val = input.value.trim();
+        cleanup();
+        resolve(val && val !== currentName ? val : null);
+      };
+
+      const cancel = () => { cleanup(); resolve(null); };
+
+      const onKey = (e) => {
+        if (e.key === 'Enter') submit();
+        if (e.key === 'Escape') cancel();
+      };
+
+      document.getElementById('rename-category-submit').addEventListener('click', submit);
+      document.getElementById('rename-category-cancel').addEventListener('click', cancel);
+      document.getElementById('rename-category-close').addEventListener('click', cancel);
+      input.addEventListener('keydown', onKey);
+    });
   }
 }

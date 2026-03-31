@@ -579,6 +579,48 @@ def create_category():
     
     return jsonify({'id': category_id, 'name': name, 'parent_id': parent_id, 'path': path})
 
+@app.route('/api/categories/<int:category_id>', methods=['PUT'])
+def rename_category(category_id):
+    """重命名分类"""
+    data = request.json
+    new_name = (data.get('name') or '').strip()
+    if not new_name:
+        return jsonify({'error': '分类名称不能为空'}), 400
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    c.execute('SELECT id, name, parent_id, path FROM categories WHERE id = ?', (category_id,))
+    cat = c.fetchone()
+    if not cat:
+        conn.close()
+        return jsonify({'error': '分类不存在'}), 404
+
+    old_path = cat['path']
+    # 构建新路径
+    if cat['parent_id']:
+        c.execute('SELECT path FROM categories WHERE id = ?', (cat['parent_id'],))
+        parent_path = c.fetchone()['path']
+        new_path = f"{parent_path}/{new_name}"
+    else:
+        new_path = new_name
+
+    # 更新自身
+    c.execute('UPDATE categories SET name = ?, path = ? WHERE id = ?',
+              (new_name, new_path, category_id))
+
+    # 更新所有后代的 path 前缀
+    c.execute('SELECT id, path FROM categories WHERE path LIKE ?', (old_path + '/%',))
+    for row in c.fetchall():
+        updated_path = new_path + row['path'][len(old_path):]
+        c.execute('UPDATE categories SET path = ? WHERE id = ?', (updated_path, row['id']))
+
+    conn.commit()
+    conn.close()
+    return jsonify({'id': category_id, 'name': new_name, 'path': new_path})
+
+
 @app.route('/api/categories/<int:category_id>', methods=['DELETE'])
 def delete_category(category_id):
     """删除分类"""
@@ -1640,11 +1682,18 @@ def get_dashboard():
                     'category': blank_category_map.get(bid, ''),
                     'total': 0,
                     'hit': 0,
+                    'volume': None,
                     'last_used': t.get('completed_at') or t.get('created_at') or '',
                 }
             blank_usage[bid]['total'] += 1
             if r.get('matched'):
                 blank_usage[bid]['hit'] += 1
+            # 记录粗胚体积（取最小匹配体积）
+            vol = (r.get('match_info') or {}).get('volume')
+            if vol and vol > 0:
+                prev = blank_usage[bid]['volume']
+                if prev is None or vol < prev:
+                    blank_usage[bid]['volume'] = vol
             # 最近使用时间
             task_time = t.get('completed_at') or t.get('created_at') or ''
             if task_time > blank_usage[bid]['last_used']:
@@ -1721,6 +1770,27 @@ def get_dashboard():
         'distribution': distribution,
         'leaderboard': leaderboard,
         'system': system,
+    })
+
+
+@app.route('/api/system-status')
+def api_system_status():
+    """轻量级系统状态接口，用于高频轮询 CPU 等实时指标"""
+    cpu_now = None
+    if _PSUTIL_OK:
+        try:
+            cpu_now = round(_psutil.cpu_percent(interval=0.2), 1)
+        except Exception:
+            pass
+    queue_size = match_queue.qsize()
+    uptime_s = int(_time.time() - _SERVER_START_TIME)
+    return jsonify({
+        'active_tasks': _active_count,
+        'max_concurrent': _max_concurrent,
+        'queue_waiting': queue_size,
+        'cpu_percent': cpu_now,
+        'uptime_s': uptime_s,
+        'matcher_available': MATCHER_AVAILABLE,
     })
 
 
