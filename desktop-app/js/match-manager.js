@@ -9,12 +9,49 @@ class MatchManager {
     this.init();
   }
 
+  static PARAM_IDS = [
+    'param-wrapping-threshold',
+    'param-concurrent-matches',
+    'param-ga-population',
+    'param-ga-generations',
+    'param-ga-crossover',
+    'param-ga-mutation',
+    'param-translation-range',
+    'param-rotation-range',
+    'param-lateral-range',
+    'param-sample-points',
+  ];
+
   init() {
+    this._restoreParams();
     this.setupEventListeners();
     this.loadCategories();
     this.checkMatcherHealth();
     this.startPolling();
     this.startElapsedTimer();
+  }
+
+  _restoreParams() {
+    const saved = localStorage.getItem('matchParams');
+    if (!saved) return;
+    try {
+      const params = JSON.parse(saved);
+      for (const id of MatchManager.PARAM_IDS) {
+        if (params[id] != null) {
+          const el = document.getElementById(id);
+          if (el) el.value = params[id];
+        }
+      }
+    } catch (_) { /* ignore corrupt data */ }
+  }
+
+  _saveParams() {
+    const params = {};
+    for (const id of MatchManager.PARAM_IDS) {
+      const el = document.getElementById(id);
+      if (el) params[id] = el.value;
+    }
+    localStorage.setItem('matchParams', JSON.stringify(params));
   }
 
   async checkMatcherHealth() {
@@ -76,6 +113,12 @@ class MatchManager {
       document.getElementById('match-result-modal').classList.remove('active');
       ResultDetailView.disposeViewer();
     });
+
+    // 参数变更时自动保存
+    for (const id of MatchManager.PARAM_IDS) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', () => this._saveParams());
+    }
   }
 
   // ── Categories ──────────────────────────────────────────────────────────────
