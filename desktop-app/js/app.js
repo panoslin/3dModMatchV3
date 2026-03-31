@@ -1,11 +1,13 @@
 // 主应用入口
-let blankManager, matchManager, historyManager;
+let blankManager, matchManager, historyManager, dashboardManager;
 
 document.addEventListener('DOMContentLoaded', () => {
   // 初始化各个模块
   blankManager = new BlankManager();
   matchManager = new MatchManager();
   historyManager = new HistoryManager();
+  dashboardManager = new DashboardManager();
+  dashboardManager.startAutoRefresh();
 
   // 页面切换
   setupPageNavigation();
@@ -44,6 +46,13 @@ function setupPageNavigation() {
         historyManager.startAutoRefresh();
       } else if (prevPage === 'history' && historyManager) {
         historyManager.stopAutoRefresh();
+      }
+
+      // 看板页面：自动刷新控制
+      if (targetPage === 'dashboard' && dashboardManager) {
+        dashboardManager.startAutoRefresh();
+      } else if (prevPage === 'dashboard' && dashboardManager) {
+        dashboardManager.stopAutoRefresh();
       }
     });
   });

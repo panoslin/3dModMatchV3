@@ -20,8 +20,18 @@ import sqlite3  # Python标准库，无需额外安装
 import uuid
 import threading
 import queue
+import time as _time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+try:
+    import psutil as _psutil
+    _PSUTIL_OK = True
+except ImportError:
+    _psutil = None
+    _PSUTIL_OK = False
+
+_SERVER_START_TIME = _time.time()
 
 print(f"Python {sys.version}")
 print(f"Executable: {sys.executable}")
@@ -463,6 +473,12 @@ def init_db():
     # 迁移：为已有数据库添加 shoe_name 列
     try:
         c.execute('ALTER TABLE match_tasks ADD COLUMN shoe_name TEXT')
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+
+    # 迁移：添加 started_at 列（任务实际开始执行的时间）
+    try:
+        c.execute('ALTER TABLE match_tasks ADD COLUMN started_at TEXT')
     except sqlite3.OperationalError:
         pass  # 列已存在
 
@@ -1466,6 +1482,248 @@ def delete_adoption(task_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/dashboard', methods=['GET'])
+def get_dashboard():
+    """数据看板：返回所有模块所需的统计数据"""
+    days = int(request.args.get('days', 30))
+
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    # ── 时间范围 ────────────────────────────────────────────────
+    now_dt = datetime.now(_CST)
+    today_str = now_dt.strftime('%Y-%m-%d')
+    yesterday_str = (now_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    # ── 模块一：概览卡片 ────────────────────────────────────────
+    # 今日任务数（创建时间 >= 今天 00:00）
+    c.execute(
+        "SELECT COUNT(*) FROM match_tasks WHERE status='completed' AND substr(created_at,1,10)=?",
+        (today_str,)
+    )
+    today_count = c.fetchone()[0]
+
+    # 昨日任务数（对比用）
+    c.execute(
+        "SELECT COUNT(*) FROM match_tasks WHERE status='completed' AND substr(created_at,1,10)=?",
+        (yesterday_str,)
+    )
+    yesterday_count = c.fetchone()[0]
+
+    # 所有已完成任务（用于命中率、包裹率、P99）
+    c.execute(
+        "SELECT id, result_data, created_at, started_at, completed_at FROM match_tasks WHERE status='completed'"
+    )
+    all_tasks = [dict(r) for r in c.fetchall()]
+
+    total_tasks = len(all_tasks)
+    hit_count = 0
+    wrapping_ratios = []     # 每任务最佳包裹率
+    per_pair_times = []      # 每粗胚-鞋模对耗时（秒）
+
+    for t in all_tasks:
+        try:
+            results = json.loads(t['result_data'] or '[]')
+        except Exception:
+            results = []
+        n_blanks = len(results)
+
+        # 命中：至少一个粗胚匹配成功
+        if any(r.get('matched') for r in results):
+            hit_count += 1
+            # 最佳包裹率（成功记录中最高的）
+            best_ratio = max(
+                (r.get('match_info', {}).get('wrapping_ratio', 0) for r in results if r.get('matched')),
+                default=0,
+            )
+            wrapping_ratios.append(best_ratio)
+
+        # P99 每对耗时：使用 started_at（任务实际开始执行）到 completed_at 的差值
+        # 两者均为 now_cst() 格式："%Y-%m-%dT%H:%M:%S+08:00"
+        if n_blanks > 0 and t.get('started_at') and t.get('completed_at'):
+            try:
+                fmt = '%Y-%m-%dT%H:%M:%S+08:00'
+                t_start = datetime.strptime(t['started_at'], fmt)
+                t_end = datetime.strptime(t['completed_at'], fmt)
+                duration = (t_end - t_start).total_seconds()
+                if duration > 0:
+                    per_pair_times.append(duration / n_blanks)
+            except Exception:
+                pass
+
+    hit_rate = round(hit_count / total_tasks * 100, 1) if total_tasks > 0 else 0
+    avg_wrapping = round(sum(wrapping_ratios) / len(wrapping_ratios) * 100, 1) if wrapping_ratios else 0
+
+    # P99 单对耗时
+    p99_pair_time = 0
+    if per_pair_times:
+        sorted_times = sorted(per_pair_times)
+        idx = int(len(sorted_times) * 0.99)
+        p99_pair_time = round(sorted_times[min(idx, len(sorted_times) - 1)], 1)
+
+    # 今日命中率 & 今日平均包裹率
+    today_tasks = [t for t in all_tasks if t.get('created_at', '').startswith(today_str)]
+    today_hit = 0
+    today_ratios = []
+    for t in today_tasks:
+        try:
+            results = json.loads(t['result_data'] or '[]')
+        except Exception:
+            results = []
+        if any(r.get('matched') for r in results):
+            today_hit += 1
+            best = max(
+                (r.get('match_info', {}).get('wrapping_ratio', 0) for r in results if r.get('matched')),
+                default=0,
+            )
+            today_ratios.append(best)
+    today_hit_rate = round(today_hit / len(today_tasks) * 100, 1) if today_tasks else 0
+    today_avg_wrapping = round(sum(today_ratios) / len(today_ratios) * 100, 1) if today_ratios else 0
+
+    overview = {
+        'today_count': today_count,
+        'yesterday_count': yesterday_count,
+        'hit_rate': today_hit_rate,
+        'hit_rate_all': hit_rate,
+        'avg_wrapping_ratio': today_avg_wrapping,
+        'avg_wrapping_ratio_all': avg_wrapping,
+        'p99_pair_time_s': p99_pair_time,
+    }
+
+    # ── 模块二：每日任务数量趋势（最近 N 天）──────────────────────
+    trend = []
+    for i in range(days - 1, -1, -1):
+        day = (now_dt - timedelta(days=i)).strftime('%Y-%m-%d')
+        c.execute(
+            "SELECT COUNT(*) FROM match_tasks WHERE status='completed' AND substr(created_at,1,10)=?",
+            (day,)
+        )
+        total_day = c.fetchone()[0]
+        # 命中任务（result_data 中至少一个 matched=true）
+        c.execute(
+            "SELECT result_data FROM match_tasks WHERE status='completed' AND substr(created_at,1,10)=?",
+            (day,)
+        )
+        hit_day = 0
+        for row in c.fetchall():
+            try:
+                rs = json.loads(row[0] or '[]')
+                if any(r.get('matched') for r in rs):
+                    hit_day += 1
+            except Exception:
+                pass
+        trend.append({'date': day, 'total': total_day, 'hit': hit_day, 'miss': total_day - hit_day})
+
+    # ── 粗胚→分类名映射 ──────────────────────────────────────────
+    c.execute('''
+        SELECT b.id, COALESCE(cat.path, '') AS category_path
+        FROM blanks b LEFT JOIN categories cat ON b.category_id = cat.id
+    ''')
+    blank_category_map = {row[0]: row[1] for row in c.fetchall()}
+
+    # ── 模块三：粗胚使用热力图 ──────────────────────────────────
+    blank_usage: dict = {}  # blank_id -> {name, total, hit, last_used, category}
+    for t in all_tasks:
+        try:
+            results = json.loads(t['result_data'] or '[]')
+        except Exception:
+            results = []
+        for r in results:
+            bid = r.get('blank_id')
+            if bid is None:
+                continue
+            if bid not in blank_usage:
+                blank_usage[bid] = {
+                    'blank_id': bid,
+                    'blank_name': r.get('blank_name', str(bid)),
+                    'category': blank_category_map.get(bid, ''),
+                    'total': 0,
+                    'hit': 0,
+                    'last_used': t.get('completed_at') or t.get('created_at') or '',
+                }
+            blank_usage[bid]['total'] += 1
+            if r.get('matched'):
+                blank_usage[bid]['hit'] += 1
+            # 最近使用时间
+            task_time = t.get('completed_at') or t.get('created_at') or ''
+            if task_time > blank_usage[bid]['last_used']:
+                blank_usage[bid]['last_used'] = task_time
+
+    heatmap = sorted(blank_usage.values(), key=lambda x: x['total'], reverse=True)[:20]
+    for item in heatmap:
+        item['hit_rate'] = round(item['hit'] / item['total'] * 100, 1) if item['total'] > 0 else 0
+
+    # ── 模块四：包裹率分布 ──────────────────────────────────────
+    # 从 match_tasks.result_data 中提取所有粗胚的包裹率（含未命中），
+    # 不能只查 match_records，因为 match_records 仅写入命中记录。
+    all_ratios = []
+    for t in all_tasks:
+        try:
+            results = json.loads(t['result_data'] or '[]')
+        except Exception:
+            results = []
+        for r in results:
+            ratio = (r.get('match_info') or {}).get('wrapping_ratio')
+            if ratio is not None and ratio > 0:
+                all_ratios.append(ratio)
+    dist_gte96 = sum(1 for r in all_ratios if r >= 0.96)
+    dist_90_96 = sum(1 for r in all_ratios if 0.90 <= r < 0.96)
+    dist_lt90 = sum(1 for r in all_ratios if r < 0.90)
+    distribution = {
+        'gte96': dist_gte96,
+        'range_90_96': dist_90_96,
+        'lt90': dist_lt90,
+        'total': len(all_ratios),
+    }
+
+    # ── 模块五：粗胚排行榜（复用 blank_usage） ──────────────────
+    blanks_list = [dict(b) for b in blank_usage.values()]
+    for b in blanks_list:
+        b['hit_rate'] = round(b['hit'] / b['total'] * 100, 1) if b['total'] > 0 else 0
+    # 至少被匹配过 1 次
+    top_blank_hit = sorted(blanks_list, key=lambda x: (x['hit_rate'], x['total']), reverse=True)[:5]
+    top_blank_miss = sorted(
+        [b for b in blanks_list if b['hit_rate'] < 100],
+        key=lambda x: (x['hit_rate'], -x['total'])
+    )[:5]
+    leaderboard = {'top_hit': top_blank_hit, 'top_miss': top_blank_miss}
+
+    # ── 模块六：系统资源 ────────────────────────────────────────
+    cpu_now = None
+    cpu_1h_avg = None
+    cpu_1h_peak = None
+    if _PSUTIL_OK:
+        try:
+            cpu_now = round(_psutil.cpu_percent(interval=0.2), 1)
+        except Exception:
+            cpu_now = None
+
+    queue_size = match_queue.qsize()
+    uptime_s = int(_time.time() - _SERVER_START_TIME)
+
+    system = {
+        'active_tasks': _active_count,
+        'max_concurrent': _max_concurrent,
+        'queue_waiting': queue_size,
+        'cpu_percent': cpu_now,
+        'cpu_1h_avg': cpu_1h_avg,
+        'cpu_1h_peak': cpu_1h_peak,
+        'uptime_s': uptime_s,
+        'matcher_available': MATCHER_AVAILABLE,
+    }
+
+    conn.close()
+    return jsonify({
+        'overview': overview,
+        'trend': trend,
+        'heatmap': heatmap,
+        'distribution': distribution,
+        'leaderboard': leaderboard,
+        'system': system,
+    })
+
+
 # 匹配工作线程
 def match_worker():
     """匹配调度线程：每个入队任务立即启动一个线程，
@@ -1684,13 +1942,15 @@ def execute_match(task_data):
         try:
             conn = sqlite3.connect(str(DB_PATH))
             c = conn.cursor()
+            task_started_at = match_tasks.get(task_id, {}).get('started_at')
             c.execute('''
                 INSERT OR REPLACE INTO match_tasks
-                (id, shoe_id, shoe_name, category_ids, status, progress, completed_at, result_data)
-                VALUES (?, ?, ?, ?, 'completed', 100.0, ?, ?)
+                (id, shoe_id, shoe_name, category_ids, status, progress, started_at, completed_at, result_data)
+                VALUES (?, ?, ?, ?, 'completed', 100.0, ?, ?, ?)
             ''', (
                 task_id, shoe_id, shoe_name,
                 json.dumps(category_ids),
+                task_started_at,
                 now_cst(),
                 json.dumps(results),
             ))

@@ -12,7 +12,8 @@
     <nav class="navbar">
       <div class="nav-brand">3D模型匹配系统</div>
       <div class="nav-tabs">
-        <button class="nav-tab active" data-page="blank">粗胚管理</button>
+        <button class="nav-tab active" data-page="dashboard">看板</button>
+        <button class="nav-tab" data-page="blank">粗胚管理</button>
         <button class="nav-tab" data-page="match">鞋模匹配</button>
         <button class="nav-tab" data-page="history">历史记录</button>
       </div>
@@ -23,8 +24,98 @@
 
     <!-- 主内容区域 -->
     <main class="main-content">
+      <!-- 看板页面 -->
+      <div id="dashboard-page" class="page active">
+        <div class="page-header">
+          <h1>数据看板</h1>
+          <div class="header-actions">
+            <select class="filter-select" id="dashboard-days-select">
+              <option value="7">最近 7 天</option>
+              <option value="30" selected>最近 30 天</option>
+              <option value="90">最近 90 天</option>
+            </select>
+            <span class="refresh-indicator" id="dashboard-refresh-indicator"></span>
+            <button class="btn-secondary" id="dashboard-refresh-btn">刷新</button>
+          </div>
+        </div>
+
+        <!-- 模块六：系统资源（置顶） -->
+        <div class="dashboard-card">
+          <div class="dashboard-card-header">
+            <h3>系统状态</h3>
+          </div>
+          <div id="dashboard-system" class="system-status"></div>
+        </div>
+
+        <!-- 模块一：概览卡片 -->
+        <div class="dashboard-overview" id="dashboard-overview">
+          <div class="overview-card" id="ov-today-count">
+            <div class="ov-label">今日任务</div>
+            <div class="ov-value">—</div>
+            <div class="ov-delta"></div>
+          </div>
+          <div class="overview-card" id="ov-hit-rate">
+            <div class="ov-label">命中率</div>
+            <div class="ov-value">—</div>
+            <div class="ov-delta"></div>
+          </div>
+          <div class="overview-card" id="ov-avg-wrapping">
+            <div class="ov-label">平均包裹率</div>
+            <div class="ov-value">—</div>
+            <div class="ov-delta"></div>
+          </div>
+          <div class="overview-card" id="ov-p99-time">
+            <div class="ov-label">P99 单对耗时</div>
+            <div class="ov-value">—</div>
+            <div class="ov-delta">全量历史</div>
+          </div>
+        </div>
+
+        <!-- 模块二 + 模块四：趋势图 + 包裹率分布 -->
+        <div class="dashboard-row">
+          <div class="dashboard-card dashboard-card-wide">
+            <div class="dashboard-card-header">
+              <h3>每日匹配任务数量</h3>
+            </div>
+            <div id="dashboard-trend" class="trend-chart"></div>
+          </div>
+          <div class="dashboard-card">
+            <div class="dashboard-card-header">
+              <h3>包裹率分布</h3>
+            </div>
+            <div id="dashboard-distribution" class="dist-chart"></div>
+          </div>
+        </div>
+
+        <!-- 模块三：粗胚热力图 -->
+        <div class="dashboard-card">
+          <div class="dashboard-card-header">
+            <h3>粗胚使用热力图</h3>
+            <span class="card-subtitle">按匹配次数排序，显示 Top 20</span>
+          </div>
+          <div id="dashboard-heatmap" class="heatmap-list"></div>
+        </div>
+
+        <!-- 模块五：鞋模排行榜 -->
+        <div class="dashboard-row">
+          <div class="dashboard-card">
+            <div class="dashboard-card-header">
+              <h3>Top 5 高命中率粗胚</h3>
+            </div>
+            <div id="dashboard-leaderboard-top" class="leaderboard-list"></div>
+          </div>
+          <div class="dashboard-card">
+            <div class="dashboard-card-header">
+              <h3>Top 5 难匹配粗胚</h3>
+            </div>
+            <div id="dashboard-leaderboard-miss" class="leaderboard-list"></div>
+          </div>
+        </div>
+
+      </div>
+
       <!-- 粗胚管理页面 -->
-      <div id="blank-page" class="page active">
+      <div id="blank-page" class="page">
         <div class="page-header">
           <h1>粗胚管理</h1>
           <div class="header-actions">
@@ -388,6 +479,7 @@
   <script src="js/blank-manager.js"></script>
   <script src="js/match-manager.js"></script>
   <script src="js/history-manager.js"></script>
+  <script src="js/dashboard-manager.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
