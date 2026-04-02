@@ -31,9 +31,18 @@ class Viewer3D {
     this.init();
   }
 
+  _getSceneBgColor() {
+    return document.documentElement.dataset.theme === 'dark' ? 0x1a1a1a : 0xf0f0f2;
+  }
+
   init() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1a1a);
+    this.scene.background = new THREE.Color(this._getSceneBgColor());
+
+    this._themeHandler = () => {
+      if (this.scene) this.scene.background.set(this._getSceneBgColor());
+    };
+    window.addEventListener('themechange', this._themeHandler);
 
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
@@ -812,6 +821,10 @@ class Viewer3D {
     if (this._resizeHandler) {
       window.removeEventListener('resize', this._resizeHandler);
       this._resizeHandler = null;
+    }
+    if (this._themeHandler) {
+      window.removeEventListener('themechange', this._themeHandler);
+      this._themeHandler = null;
     }
     if (this.renderer) {
       if (this.renderer.domElement && this.renderer.domElement.parentNode) {

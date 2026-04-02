@@ -2,6 +2,9 @@
 let blankManager, matchManager, historyManager, dashboardManager;
 
 document.addEventListener('DOMContentLoaded', () => {
+  // 初始化主题
+  initTheme();
+
   // 初始化各个模块
   blankManager = new BlankManager();
   matchManager = new MatchManager();
@@ -18,6 +21,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // 首次使用引导
   checkFirstTimeGuide();
 });
+
+function initTheme() {
+  const saved = localStorage.getItem('theme');
+  const btn = document.getElementById('theme-toggle-btn');
+  if (saved === 'dark') {
+    document.documentElement.dataset.theme = 'dark';
+    if (btn) btn.textContent = '☀️';
+  }
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const isDark = document.documentElement.dataset.theme === 'dark';
+      if (isDark) {
+        delete document.documentElement.dataset.theme;
+        localStorage.setItem('theme', 'light');
+        btn.textContent = '🌙';
+      } else {
+        document.documentElement.dataset.theme = 'dark';
+        localStorage.setItem('theme', 'dark');
+        btn.textContent = '☀️';
+      }
+      window.dispatchEvent(new CustomEvent('themechange'));
+    });
+  }
+}
 
 function setupPageNavigation() {
   const tabs = document.querySelectorAll('.nav-tab');
