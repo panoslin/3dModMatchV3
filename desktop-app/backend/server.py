@@ -124,11 +124,11 @@ try:
     print("导入 matcher..."); sys.stdout.flush()
     from matcher import find_optimal_match
     MATCHER_AVAILABLE = True
-    print("✅ 匹配模块导入成功")
+    print("[OK] 匹配模块导入成功")
 except ImportError as e:
     import traceback
     MATCHER_LOAD_ERROR = f"{type(e).__name__}: {e}"
-    print(f"⚠️  匹配模块导入失败: {MATCHER_LOAD_ERROR}")
+    print(f"[WARN]  匹配模块导入失败: {MATCHER_LOAD_ERROR}")
     traceback.print_exc()
 
 
@@ -153,14 +153,14 @@ def _try_load_matcher():
         find_optimal_match = getattr(_mod, 'find_optimal_match')
         MATCHER_AVAILABLE = True
         MATCHER_LOAD_ERROR = None
-        print("✅ 匹配模块重新加载成功")
+        print("[OK] 匹配模块重新加载成功")
         return True, None
     except Exception as e:
         import traceback
         err_msg = f"{type(e).__name__}: {e}"
         MATCHER_LOAD_ERROR = err_msg
         MATCHER_AVAILABLE = False
-        print(f"❌ 匹配模块重新加载失败: {err_msg}")
+        print(f"[ERR] 匹配模块重新加载失败: {err_msg}")
         traceback.print_exc()
         return False, err_msg
 
@@ -219,7 +219,7 @@ try:
     (UPLOAD_DIR / 'shoes').mkdir(parents=True, exist_ok=True)
     print(f"数据目录: {DATA_DIR}")
 except OSError as e:
-    print(f"❌ 错误: 无法创建数据目录 {DATA_DIR}: {e}")
+    print(f"[ERR] 错误: 无法创建数据目录 {DATA_DIR}: {e}")
     # 如果无法创建，尝试使用临时目录作为后备
     temp_data = Path(tempfile.gettempdir()) / '3d_mod_match_data'
     DATA_DIR = temp_data
@@ -229,7 +229,7 @@ except OSError as e:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     (UPLOAD_DIR / 'blanks').mkdir(parents=True, exist_ok=True)
     (UPLOAD_DIR / 'shoes').mkdir(parents=True, exist_ok=True)
-    print(f"⚠️  使用临时目录: {DATA_DIR}")
+    print(f"[WARN]  使用临时目录: {DATA_DIR}")
 
 ALLOWED_EXTENSIONS = {'stl', '3dm'}
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
@@ -836,7 +836,7 @@ def get_blank_preview(blank_id):
         conn.close()
         
         if not row:
-            print(f"❌ 粗胚ID {blank_id} 不存在")
+            print(f"[ERR] 粗胚ID {blank_id} 不存在")
             return jsonify({'error': '粗胚不存在'}), 404
         
         file_path_str = row[0]
@@ -852,18 +852,18 @@ def get_blank_preview(blank_id):
                 file_path = UPLOAD_DIR / 'blanks' / Path(file_path_str).name
             
             if not file_path.exists():
-                print(f"❌ 文件不存在: 原始路径={file_path_str}, 尝试路径={file_path}")
+                print(f"[ERR] 文件不存在: 原始路径={file_path_str}, 尝试路径={file_path}")
                 return jsonify({'error': f'文件不存在: {file_path_str}'}), 404
         
-        print(f"📂 加载文件: {file_path}")
+        print(f"[INFO] 加载文件: {file_path}")
         
         mesh_quality = request.args.get('mesh_quality', 'medium')
         
         try:
             vertices, faces = load_3dm_file(str(file_path), mesh_quality=mesh_quality)
-            print(f"✅ 文件加载成功: {len(vertices)} 顶点, {len(faces)} 面")
+            print(f"[OK] 文件加载成功: {len(vertices)} 顶点, {len(faces)} 面")
         except Exception as e:
-            print(f"❌ 加载3DM文件失败: {e}")
+            print(f"[ERR] 加载3DM文件失败: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': f'加载3DM文件失败: {str(e)}'}), 500
@@ -873,7 +873,7 @@ def get_blank_preview(blank_id):
         if np.any(np.isnan(vertices)) or np.any(np.isinf(vertices)):
             # 替换NaN和Inf为0
             vertices = np.nan_to_num(vertices, nan=0.0, posinf=0.0, neginf=0.0)
-            print(f"⚠️  警告: 顶点数据包含NaN或Inf值，已替换为0")
+            print(f"[WARN]  警告: 顶点数据包含NaN或Inf值，已替换为0")
         
         # 确保顶点是有效的浮点数
         vertices = vertices.astype(np.float32)
@@ -890,9 +890,9 @@ def get_blank_preview(blank_id):
                         if all(0 <= int(idx) <= max_vertex_index for idx in face[:3]):
                             valid_faces.append([int(face[0]), int(face[1]), int(face[2])])
                         else:
-                            print(f"⚠️  警告: 跳过无效面索引: {face}")
+                            print(f"[WARN]  警告: 跳过无效面索引: {face}")
                     except (ValueError, TypeError) as e:
-                        print(f"⚠️  警告: 面索引格式错误: {face}, 错误: {e}")
+                        print(f"[WARN]  警告: 面索引格式错误: {face}, 错误: {e}")
             faces = np.array(valid_faces, dtype=np.int32) if valid_faces else np.array([], dtype=np.int32)
         else:
             faces = np.array([], dtype=np.int32)
@@ -908,10 +908,10 @@ def get_blank_preview(blank_id):
                 
                 # 检查边界是否有效
                 if any(np.isnan(b) or np.isinf(b) for b in bounds['x'] + bounds['y'] + bounds['z']):
-                    print(f"⚠️  警告: 边界框包含无效值，使用默认值")
+                    print(f"[WARN]  警告: 边界框包含无效值，使用默认值")
                     bounds = {'x': [0, 0], 'y': [0, 0], 'z': [0, 0]}
             except Exception as e:
-                print(f"⚠️  警告: 计算边界框失败: {e}")
+                print(f"[WARN]  警告: 计算边界框失败: {e}")
                 bounds = {'x': [0, 0], 'y': [0, 0], 'z': [0, 0]}
         else:
             bounds = {'x': [0, 0], 'y': [0, 0], 'z': [0, 0]}
@@ -927,7 +927,7 @@ def get_blank_preview(blank_id):
                 if len(f) >= 3:
                     faces_list.append([int(f[0]), int(f[1]), int(f[2])])
             
-            print(f"✅ 数据转换完成: {len(vertices_list)} 顶点, {len(faces_list)} 面")
+            print(f"[OK] 数据转换完成: {len(vertices_list)} 顶点, {len(faces_list)} 面")
             
             return jsonify({
                 'vertices': vertices_list,
@@ -939,16 +939,16 @@ def get_blank_preview(blank_id):
                 }
             })
         except Exception as e:
-            print(f"❌ 数据转换失败: {e}")
+            print(f"[ERR] 数据转换失败: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': f'数据转换失败: {str(e)}'}), 500
             
     except sqlite3.Error as e:
-        print(f"❌ 数据库错误: {e}")
+        print(f"[ERR] 数据库错误: {e}")
         return jsonify({'error': f'数据库错误: {str(e)}'}), 500
     except Exception as e:
-        print(f"❌ 预览API错误: {e}")
+        print(f"[ERR] 预览API错误: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'加载模型失败: {str(e)}'}), 500
@@ -1875,7 +1875,7 @@ def execute_match(task_data):
                 ga_params.num_sample_points = params.get('sample_points', 500)
                 ga_params.target_wrapping_ratio = params.get('wrapping_threshold', 0.96)
             except Exception as e:
-                print(f"⚠️  创建GA参数失败: {e}")
+                print(f"[WARN]  创建GA参数失败: {e}")
                 ga_params = None
         
         wrapping_threshold = params.get('wrapping_threshold', 0.96)
