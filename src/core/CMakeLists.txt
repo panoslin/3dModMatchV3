@@ -82,8 +82,11 @@ else()
 endif()
 
 # Compiler flags for optimization (cross-platform)
+# MSVC: /arch:SSE2 is the x64 baseline — avoids AVX/AVX2 that crash on older CPUs.
+# Eigen3 auto-detects build-machine SIMD at compile time; EIGEN_DONT_VECTORIZE=0
+# combined with /arch:SSE2 keeps it within SSE2 only.
 if(MSVC)
-    target_compile_options(mesh_matcher PRIVATE $<$<CONFIG:Release>:/O2 /GL>)
+    target_compile_options(mesh_matcher PRIVATE $<$<CONFIG:Release>:/O2 /GL /arch:SSE2>)
 else()
     target_compile_options(mesh_matcher PRIVATE
         $<$<CONFIG:Release>:-O3 -march=native -ffast-math>
@@ -91,5 +94,13 @@ else()
     )
 endif()
 
-# Add Eigen include to source files
+# Eigen compile-time flags
+# EIGEN_DONT_PARALLELIZE: disable Eigen's internal threading (we use OpenMP ourselves)
 target_compile_definitions(mesh_matcher PRIVATE EIGEN_DONT_PARALLELIZE)
+# On MSVC release builds, prevent Eigen from using AVX/AVX2/FMA even if the
+# build machine supports them — ensures the binary runs on older CPUs (SSE2 baseline).
+if(MSVC)
+    target_compile_definitions(mesh_matcher PRIVATE
+        EIGEN_DONT_ALIGN_STATICALLY=1
+    )
+endif()
