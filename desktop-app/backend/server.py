@@ -116,6 +116,18 @@ get_3dm_file_info = None
 MATCHER_AVAILABLE = False
 MATCHER_LOAD_ERROR = None
 
+# Python 3.8+ restricts DLL search on Windows — native .pyd extensions can
+# only resolve dependencies from: app dir, System32, and os.add_dll_directory().
+# Explicitly register python.exe's dir (bundled vcruntime/vcomp/msvcp DLLs)
+# and the src/biz dir (where the .pyd lives) so LoadLibrary finds them.
+if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
+    for _dll_dir in [os.path.dirname(os.path.abspath(sys.executable))] + \
+                     [str(p.resolve()) for p in possible_paths if p.resolve().exists()]:
+        try:
+            os.add_dll_directory(_dll_dir)
+        except OSError:
+            pass
+
 try:
     print("导入 load_3dm..."); sys.stdout.flush()
     from load_3dm import load_3dm_file, get_3dm_file_info

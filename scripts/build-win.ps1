@@ -176,6 +176,31 @@ Copy-Item (Join-Path $PythonDir "pythonw.exe") $DistDir -Force -ErrorAction Sile
 # Copy all required DLLs next to python.exe
 Get-ChildItem $PythonDir -Filter "python3*.dll" | Copy-Item -Destination $DistDir -Force
 Get-ChildItem $PythonDir -Filter "vcruntime*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination $DistDir -Force
+
+# Bundle VC++ runtime DLLs that mesh_matcher.pyd depends on.
+# The .pyd is compiled with VS2022 and may link OpenMP — these DLLs are
+# present on the build machine (VS installed) but NOT on end-user machines
+# without the VC++ Redistributable.  Copy from the VS redist directory.
+$VcToolsRedistDir = & $VsWhere -latest -find "VC\Redist\MSVC\*\x64" 2>$null |
+    Sort-Object -Descending | Select-Object -First 1
+$RuntimeDlls = @("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+                  "vcomp140.dll", "concrt140.dll", "vcruntime140_1.dll")
+$copied = @()
+foreach ($dll in $RuntimeDlls) {
+    # Skip if already present in python-dist (e.g. vcruntime140_1 from Python)
+    if (Test-Path (Join-Path $DistDir $dll)) { continue }
+    # Try VS redist directory first
+    if ($VcToolsRedistDir) {
+        $src = Get-ChildItem $VcToolsRedistDir -Recurse -Filter $dll -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($src) { Copy-Item $src.FullName $DistDir -Force; $copied += $dll; continue }
+    }
+    # Fallback: System32
+    $sys32 = Join-Path $env:SystemRoot "System32\$dll"
+    if (Test-Path $sys32) { Copy-Item $sys32 $DistDir -Force; $copied += $dll }
+}
+if ($copied.Count -gt 0) { Info "Bundled VC++ runtime DLLs: $($copied -join ', ')" }
+
 Info "Copied python.exe and DLLs to python-dist\"
 
 # DLLs/ directory (extension modules + shared libs)
