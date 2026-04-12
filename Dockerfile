@@ -30,7 +30,8 @@ RUN pip install --no-cache-dir \
     numpy==1.26.4 \
     pybind11==2.11.1 \
     Flask>=2.0.0 \
-    Flask-CORS>=3.0.0
+    Flask-CORS>=3.0.0 \
+    trimesh>=4.0
 
 # 复制源代码
 COPY src/biz/load_3dm.py /app/src/biz/

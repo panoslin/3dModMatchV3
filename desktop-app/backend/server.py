@@ -111,8 +111,8 @@ else:
 # 导入匹配模块
 mesh_matcher = None
 find_optimal_match = None
-load_3dm_file = None
-get_3dm_file_info = None
+load_mesh_file = None
+get_mesh_file_info = None
 MATCHER_AVAILABLE = False
 MATCHER_LOAD_ERROR = None
 
@@ -129,8 +129,8 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
             pass
 
 try:
-    print("导入 load_3dm..."); sys.stdout.flush()
-    from load_3dm import load_3dm_file, get_3dm_file_info
+    print("导入 load_mesh..."); sys.stdout.flush()
+    from load_mesh import load_mesh_file, get_mesh_file_info
     print("导入 mesh_matcher..."); sys.stdout.flush()
     import mesh_matcher
     print("导入 matcher..."); sys.stdout.flush()
@@ -146,14 +146,14 @@ except ImportError as e:
 
 def _try_load_matcher():
     """重新尝试导入匹配模块（用于 /api/match/reload 端点）"""
-    global mesh_matcher, find_optimal_match, load_3dm_file, get_3dm_file_info
+    global mesh_matcher, find_optimal_match, load_mesh_file, get_mesh_file_info
     global MATCHER_AVAILABLE, MATCHER_LOAD_ERROR
     try:
         import importlib
-        if load_3dm_file is None:
-            from load_3dm import load_3dm_file as _l, get_3dm_file_info as _g
-            load_3dm_file = _l
-            get_3dm_file_info = _g
+        if load_mesh_file is None:
+            from load_mesh import load_mesh_file as _l, get_mesh_file_info as _g
+            load_mesh_file = _l
+            get_mesh_file_info = _g
         if 'mesh_matcher' in sys.modules:
             mesh_matcher = importlib.reload(sys.modules['mesh_matcher'])
         else:
@@ -751,9 +751,11 @@ def upload_blank():
     
     # 获取文件信息
     try:
-        info = get_3dm_file_info(str(file_path)) if get_3dm_file_info else {}
-    except Exception:
-        info = {}
+        info = get_mesh_file_info(str(file_path)) if get_mesh_file_info else {}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        info = {'error': str(e)}
     
     # 保存到数据库
     conn = sqlite3.connect(str(DB_PATH))
@@ -837,8 +839,8 @@ def delete_blank(blank_id):
 @app.route('/api/blanks/<int:blank_id>/preview', methods=['GET'])
 def get_blank_preview(blank_id):
     """获取粗胚预览数据"""
-    if load_3dm_file is None:
-        return jsonify({'error': '3DM加载模块不可用，请安装rhino3dm: pip install rhino3dm'}), 503
+    if load_mesh_file is None:
+        return jsonify({'error': 'Mesh加载模块不可用，请检查 rhino3dm / trimesh 是否已安装'}), 503
     try:
         conn = sqlite3.connect(str(DB_PATH))
         c = conn.cursor()
@@ -872,13 +874,13 @@ def get_blank_preview(blank_id):
         mesh_quality = request.args.get('mesh_quality', 'medium')
         
         try:
-            vertices, faces = load_3dm_file(str(file_path), mesh_quality=mesh_quality)
+            vertices, faces = load_mesh_file(str(file_path), mesh_quality=mesh_quality)
             print(f"[OK] 文件加载成功: {len(vertices)} 顶点, {len(faces)} 面")
         except Exception as e:
-            print(f"[ERR] 加载3DM文件失败: {e}")
+            print(f"[ERR] 加载Mesh文件失败: {e}")
             import traceback
             traceback.print_exc()
-            return jsonify({'error': f'加载3DM文件失败: {str(e)}'}), 500
+            return jsonify({'error': f'加载Mesh文件失败: {str(e)}'}), 500
         
         # 验证和清理数据（参考web_viewer.py的处理方式）
         # 检查NaN和Inf值
@@ -1116,8 +1118,8 @@ def _compute_preview_data(record_id: int) -> bytes:
     wrapping_threshold = result_data.get('target_wrapping_ratio', 0.96)
     conn.close()
 
-    target_vertices, target_faces = load_3dm_file(str(shoe_path), mesh_quality='high')
-    candidate_vertices, candidate_faces = load_3dm_file(str(blank_path), mesh_quality='high')
+    target_vertices, target_faces = load_mesh_file(str(shoe_path), mesh_quality='high')
+    candidate_vertices, candidate_faces = load_mesh_file(str(blank_path), mesh_quality='high')
 
     def _normalize(v: np.ndarray) -> np.ndarray:
         n = np.linalg.norm(v)

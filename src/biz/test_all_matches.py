@@ -14,9 +14,9 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 
 try:
-    from load_3dm import load_3dm_file, ThreeDMFileError
+    from load_mesh import load_mesh_file, MeshFileError
 except ImportError as e:
-    print(f"❌ 错误: 无法导入 load_3dm 模块: {e}")
+    print(f"❌ 错误: 无法导入 load_mesh 模块: {e}")
     sys.exit(1)
 
 try:
@@ -48,7 +48,7 @@ def match_single_pair(
     """
     try:
         # 加载目标文件
-        target_vertices, target_faces = load_3dm_file(target_file, mesh_quality='high')
+        target_vertices, target_faces = load_mesh_file(target_file, mesh_quality='high')
         
         # 创建匹配器
         matcher = mesh_matcher.MeshMatcher()
@@ -56,7 +56,7 @@ def match_single_pair(
         matcher.load_target_mesh(target_vertices, target_faces)
         
         # 加载候选文件
-        candidate_vertices, candidate_faces = load_3dm_file(
+        candidate_vertices, candidate_faces = load_mesh_file(
             candidate_file, mesh_quality='high'
         )
         
@@ -95,7 +95,7 @@ def match_single_pair(
         
         return True, match_info
         
-    except ThreeDMFileError as e:
+    except MeshFileError as e:
         return False, {'error': f'文件加载错误: {str(e)}'}
     except Exception as e:
         return False, {'error': f'匹配过程出错: {str(e)}'}

@@ -17,9 +17,9 @@ from typing import List, Tuple, Optional
 import numpy as np
 
 try:
-    from load_3dm import load_3dm_file, ThreeDMFileError
+    from load_mesh import load_mesh_file, MeshFileError
 except ImportError as e:
-    print(f"❌ 错误: 无法导入 load_3dm 模块: {e}")
+    print(f"❌ 错误: 无法导入 load_mesh 模块: {e}")
     sys.exit(1)
 
 try:
@@ -54,8 +54,8 @@ def find_optimal_match(
         print(f"加载目标鞋模: {target_file}")
     
     try:
-        target_vertices, target_faces = load_3dm_file(target_file, mesh_quality='high')
-    except ThreeDMFileError as e:
+        target_vertices, target_faces = load_mesh_file(target_file, mesh_quality='high')
+    except MeshFileError as e:
         if verbose:
             print(f"❌ 无法加载目标文件: {e}")
         return None, {'error': str(e)}
@@ -78,7 +78,7 @@ def find_optimal_match(
 
         try:
             # 加载候选粗胚
-            candidate_vertices, candidate_faces = load_3dm_file(
+            candidate_vertices, candidate_faces = load_mesh_file(
                 candidate_file, mesh_quality='high'
             )
 
@@ -155,7 +155,7 @@ def find_optimal_match(
                         reasons.append("不完全包裹")
                     print(f"  ❌ 不满足匹配条件: {', '.join(reasons)}")
 
-        except ThreeDMFileError as e:
+        except MeshFileError as e:
             if verbose:
                 print(f"  ❌ 无法加载文件: {e}")
             all_candidate_results.append({
@@ -250,9 +250,9 @@ def match_testcase_optimized(
     if not candidate_dir.exists():
         return {'error': f'Candidate directory not found: {candidate_dir}'}
     
-    # 查找所有目标文件和候选文件
-    target_files = sorted(target_dir.glob('*.3dm'))
-    candidate_files = sorted(candidate_dir.glob('*.3dm'))
+    # 查找所有目标文件和候选文件（支持 .3dm 和 .stl）
+    target_files = sorted(target_dir.glob('*.3dm')) + sorted(target_dir.glob('*.stl'))
+    candidate_files = sorted(candidate_dir.glob('*.3dm')) + sorted(candidate_dir.glob('*.stl'))
     
     if not target_files:
         return {'error': 'No target files found'}

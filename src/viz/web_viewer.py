@@ -20,7 +20,7 @@ import numpy as np
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / 'src' / 'biz'))
 
-from load_3dm import load_3dm_file, get_3dm_file_info, ThreeDMFileError
+from load_mesh import load_mesh_file, get_mesh_file_info, MeshFileError
 
 # 尝试导入匹配模块（可选）
 try:
@@ -78,13 +78,13 @@ def upload_file():
             return jsonify({'error': f'文件太大，最大允许 {MAX_FILE_SIZE / 1024 / 1024}MB'}), 400
         
         # 获取文件信息
-        info = get_3dm_file_info(temp_path)
+        info = get_mesh_file_info(temp_path)
         
         # 读取网格质量参数（从请求中获取，默认为 'medium'）
         mesh_quality = request.form.get('mesh_quality', 'medium')
         
         # 加载 3DM 文件
-        vertices, faces = load_3dm_file(temp_path, mesh_quality=mesh_quality)
+        vertices, faces = load_mesh_file(temp_path, mesh_quality=mesh_quality)
         
         # 计算三个轴（与C++算法保持一致）
         axes_data = None
@@ -144,7 +144,7 @@ def upload_file():
         
         return jsonify(result)
         
-    except ThreeDMFileError as e:
+    except MeshFileError as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return jsonify({'error': str(e)}), 400
@@ -174,14 +174,14 @@ def get_file_info():
         file.save(temp_path)
         
         # 获取文件信息
-        info = get_3dm_file_info(temp_path)
+        info = get_mesh_file_info(temp_path)
         
         # 清理临时文件
         os.remove(temp_path)
         
         return jsonify({'success': True, 'info': info})
         
-    except ThreeDMFileError as e:
+    except MeshFileError as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return jsonify({'error': str(e)}), 400
@@ -224,8 +224,8 @@ def match_files():
         mesh_quality = request.form.get('mesh_quality', 'high')
         
         # 加载文件
-        target_vertices, target_faces = load_3dm_file(target_path, mesh_quality=mesh_quality)
-        candidate_vertices, candidate_faces = load_3dm_file(candidate_path, mesh_quality=mesh_quality)
+        target_vertices, target_faces = load_mesh_file(target_path, mesh_quality=mesh_quality)
+        candidate_vertices, candidate_faces = load_mesh_file(candidate_path, mesh_quality=mesh_quality)
         
         # 创建匹配器
         matcher = mesh_matcher.MeshMatcher()
@@ -464,7 +464,7 @@ def match_files():
             }
         })
         
-    except ThreeDMFileError as e:
+    except MeshFileError as e:
         return jsonify({'error': f'文件读取错误: {str(e)}'}), 400
     except Exception as e:
         import traceback
