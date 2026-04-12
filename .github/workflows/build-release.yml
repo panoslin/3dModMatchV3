@@ -4,15 +4,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      create_release:
-        description: 'Create a draft Release after build'
-        type: boolean
-        default: true
-      release_tag:
-        description: 'Release tag (e.g. v1.0.0). Required if creating a release.'
-        type: string
-        default: ''
 
 permissions:
   contents: write
@@ -69,9 +60,7 @@ jobs:
           path: desktop-app/dist/*.exe
 
   release:
-    if: >-
-      startsWith(github.ref, 'refs/tags/v')
-      || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
@@ -82,12 +71,7 @@ jobs:
 
       - name: Determine tag
         id: tag
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${{ inputs.release_tag || format('v{0}', github.run_number) }}" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
