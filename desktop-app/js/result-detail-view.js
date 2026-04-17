@@ -1,5 +1,4 @@
-// 共享的匹配结果详情视图模块
-// 被 MatchManager 和 HistoryManager 共同使用
+/** Shared detail view for match results — used by both MatchManager and HistoryManager. */
 class ResultDetailView {
   static _viewer = null;
   static _loadSeq = 0;
@@ -10,12 +9,8 @@ class ResultDetailView {
   static _adoptTags = [];           // 采纳弹窗中的标签列表
   static _pendingAdoptResult = null; // 待采纳的结果行
 
-  static _esc(text) {
-    if (!text && text !== 0) return '';
-    const d = document.createElement('div');
-    d.textContent = String(text);
-    return d.innerHTML;
-  }
+  /** @see utils.js escapeHtml */
+  static _esc(text) { return escapeHtml(text); }
 
   /**
    * 展示鞋模的全部粗胚匹配结果

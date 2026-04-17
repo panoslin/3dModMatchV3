@@ -1,4 +1,4 @@
-// 鞋模匹配管理模块
+/** Match management: shoe upload, GA parameter tuning, polling, result display. */
 class MatchManager {
   constructor() {
     this.uploadedShoes = [];
@@ -520,10 +520,6 @@ class MatchManager {
     return `${m}m ${s}s`;
   }
 
-  _esc(text) {
-    if (!text && text !== 0) return '';
-    const d = document.createElement('div');
-    d.textContent = String(text);
-    return d.innerHTML;
-  }
+  /** @see utils.js escapeHtml */
+  _esc(text) { return escapeHtml(text); }
 }

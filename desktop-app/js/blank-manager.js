@@ -1,4 +1,4 @@
-// 粗胚管理模块
+/** Blank (粗胚) management: category sidebar, upload, preview, CRUD. */
 class BlankManager {
   constructor() {
     this.currentPage = 1;
@@ -801,23 +801,14 @@ class BlankManager {
     }
   }
 
-  formatFileSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-  }
+  /** @see utils.js formatFileSize */
+  formatFileSize(bytes) { return formatFileSize(bytes); }
 
-  formatDate(dateString) {
-    if (!dateString) return '—';
-    const date = new Date(dateString);
-    return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  }
+  /** @see utils.js formatDate */
+  formatDate(dateString) { return formatDate(dateString); }
 
-  escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
+  /** @see utils.js escapeHtml */
+  escapeHtml(text) { return escapeHtml(text); }
 
   _showRenameDialog(currentName) {
     return new Promise((resolve) => {

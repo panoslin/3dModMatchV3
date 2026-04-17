@@ -1,4 +1,4 @@
-// 数据看板管理器
+/** Dashboard: overview stats, trend chart, heatmap, distribution, leaderboard, system health. */
 class DashboardManager {
   constructor() {
     this._refreshTimer = null;

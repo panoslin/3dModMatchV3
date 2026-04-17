@@ -3,7 +3,7 @@
 #include <cmath>
 #include <limits>
 
-// 构建 BVH
+/// @brief 从平铺顶点/面数组构建 BVH 树
 void BVHTree::build(const std::vector<double>& vertices,
                     const std::vector<int>& faces) {
     triangles_.clear();
@@ -42,7 +42,7 @@ void BVHTree::build(const std::vector<double>& vertices,
     root_ = buildRecursive(all_indices, 0);
 }
 
-// 递归构建 BVH
+/// @brief 递归二分三角形集合，构建 BVH 子树
 std::unique_ptr<BVHNode> BVHTree::buildRecursive(
     const std::vector<int>& triangle_indices,
     int depth) {
@@ -87,7 +87,7 @@ std::unique_ptr<BVHNode> BVHTree::buildRecursive(
     return node;
 }
 
-// 计算包围盒
+/// @brief 计算一组三角形的合并 AABB
 AABB BVHTree::computeBoundingBox(const std::vector<int>& triangle_indices) const {
     AABB bbox;
     
@@ -101,7 +101,7 @@ AABB BVHTree::computeBoundingBox(const std::vector<int>& triangle_indices) const
     return bbox;
 }
 
-// 选择最优分割轴（选择最长的轴）
+/// @brief 选择 AABB 最长轴作为分割轴
 int BVHTree::chooseBestSplitAxis(const std::vector<int>& triangle_indices) const {
     AABB bbox = computeBoundingBox(triangle_indices);
     Eigen::Vector3d size = bbox.size();
@@ -112,7 +112,7 @@ int BVHTree::chooseBestSplitAxis(const std::vector<int>& triangle_indices) const
     return 2;
 }
 
-// 找到最优分割位置（使用中位数）
+/// @brief 用中位数确定分割位置
 double BVHTree::findOptimalSplitPosition(
     const std::vector<int>& triangle_indices,
     int axis) const {
@@ -139,7 +139,7 @@ double BVHTree::findOptimalSplitPosition(
     }
 }
 
-// 分割三角形
+/// @brief 按分割轴和位置将三角形分到左右两组
 void BVHTree::splitTriangles(
     const std::vector<int>& triangle_indices,
     int axis, double split_pos,
@@ -159,7 +159,7 @@ void BVHTree::splitTriangles(
     }
 }
 
-// 射线-包围盒相交测试（使用 slab 方法）
+/// @brief 射线-AABB 相交测试（slab 方法）
 bool BVHTree::rayIntersectsAABB(const Ray& ray, const AABB& bbox) const {
     const double epsilon = 1e-9;
     double tmin = 0.0;
@@ -190,7 +190,7 @@ bool BVHTree::rayIntersectsAABB(const Ray& ray, const AABB& bbox) const {
     return true;  // 相交
 }
 
-// 射线-三角形相交测试（Möller-Trumbore 算法）
+/// @brief 射线-三角形相交测试（Möller-Trumbore 算法）
 bool BVHTree::rayTriangleIntersect(const Ray& ray, const Triangle& tri, double& t) const {
     const Eigen::Vector3d& v0 = tri.v0;
     const Eigen::Vector3d& v1 = tri.v1;
@@ -226,7 +226,7 @@ bool BVHTree::rayTriangleIntersect(const Ray& ray, const Triangle& tri, double& 
     return t > epsilon;  // t > 0 表示射线从三角形前方相交
 }
 
-// BVH 射线投射（递归）
+/// @brief 递归遍历 BVH 统计射线与三角形的交点数
 void BVHTree::rayCastRecursive(const Ray& ray, const BVHNode* node,
                                int& intersection_count) const {
     if (!node) return;
@@ -255,7 +255,7 @@ void BVHTree::rayCastRecursive(const Ray& ray, const BVHNode* node,
     }
 }
 
-// 判断点是否在网格内部
+/// @brief 用射线奇偶法判断点是否在网格内部
 bool BVHTree::isPointInside(const Eigen::Vector3d& point) const {
     if (!root_) return false;
     
@@ -271,7 +271,7 @@ bool BVHTree::isPointInside(const Eigen::Vector3d& point) const {
     return (intersection_count % 2 == 1);
 }
 
-// 计算点到三角形的最短距离
+/// @brief 用重心坐标法计算点到三角形的最短距离
 double BVHTree::pointTriangleDistance(const Eigen::Vector3d& point,
                                       const Triangle& tri) const {
     // 使用重心坐标方法计算点到三角形的最短距离
@@ -355,7 +355,7 @@ double BVHTree::pointTriangleDistance(const Eigen::Vector3d& point,
     return (point - closest_point).norm();
 }
 
-// BVH 最近点查询（递归）
+/// @brief 递归遍历 BVH 找最近三角形，用 AABB 距离剪枝
 void BVHTree::findClosestPointRecursive(const Eigen::Vector3d& point,
                                        const BVHNode* node,
                                        double& best_dist_sq,
@@ -396,7 +396,7 @@ void BVHTree::findClosestPointRecursive(const Eigen::Vector3d& point,
     }
 }
 
-// 计算符号距离
+/// @brief 计算点到网格的符号距离（负=内部，正=外部）
 double BVHTree::signedDistance(const Eigen::Vector3d& point) const {
     if (!root_) {
         return std::numeric_limits<double>::max();

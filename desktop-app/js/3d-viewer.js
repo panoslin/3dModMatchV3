@@ -1,5 +1,4 @@
-// 3D可视化组件（基于Three.js）
-// 复刻 src/viz 的完整渲染逻辑：双模型叠加、GA回放、轴可视化、外点检测
+/** Three.js 3D viewer: dual-mesh overlay, GA replay, axis visualization, outside-point detection. */
 class Viewer3D {
   constructor(containerId) {
     this.container = document.getElementById(containerId);

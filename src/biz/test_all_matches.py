@@ -34,18 +34,7 @@ def match_single_pair(
     ga_params=None,
     verbose: bool = False
 ) -> Tuple[bool, Dict]:
-    """
-    匹配单个 target 和 candidate 文件对
-    
-    Args:
-        target_file: 目标文件路径
-        candidate_file: 候选文件路径
-        wrapping_threshold: 包裹率阈值
-        ga_params: 遗传算法参数
-        
-    Returns:
-        Tuple[bool, Dict]: (是否成功, 匹配结果信息)
-    """
+    """匹配单个 target-candidate 文件对，返回 (成功标志, 结果字典)。"""
     try:
         # 加载目标文件
         target_vertices, target_faces = load_mesh_file(target_file, mesh_quality='high')
@@ -109,18 +98,7 @@ def test_all_matches(
     specific_testcase: str = None,
     show_only_valid: bool = False
 ) -> Dict:
-    """
-    测试所有匹配组合
-    
-    Args:
-        testcases_dir: 测试用例根目录
-        verbose: 是否输出详细信息
-        wrapping_threshold: 包裹率阈值
-        ga_params: 遗传算法参数
-        
-    Returns:
-        Dict: 所有匹配结果
-    """
+    """遍历 testcases_dir 下所有测试用例，执行全排列匹配并汇总结果。"""
     # 查找所有测试用例目录
     if specific_testcase:
         # 如果指定了特定测试用例，只测试该用例
@@ -257,13 +235,7 @@ def test_all_matches(
 
 
 def generate_csv_table(results: Dict, output_file: Path):
-    """
-    生成 CSV 表格
-    
-    Args:
-        results: 匹配结果字典
-        output_file: 输出文件路径
-    """
+    """将匹配结果写入 CSV 文件。"""
     if 'error' in results:
         print(f"❌ 错误: {results['error']}")
         return
@@ -322,13 +294,7 @@ def generate_csv_table(results: Dict, output_file: Path):
 
 
 def generate_html_table(results: Dict, output_file: Path):
-    """
-    生成 HTML 表格
-    
-    Args:
-        results: 匹配结果字典
-        output_file: 输出文件路径
-    """
+    """将匹配结果写入带样式的 HTML 表格文件。"""
     if 'error' in results:
         print(f"❌ 错误: {results['error']}")
         return

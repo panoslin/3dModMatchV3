@@ -135,6 +135,7 @@ try:
     import mesh_matcher
     print("导入 matcher..."); sys.stdout.flush()
     from matcher import find_optimal_match
+    from transform_utils import normalize as _tf_normalize, compute_alignment_rotation, rodrigues_rotation
     MATCHER_AVAILABLE = True
     print("[OK] 匹配模块导入成功")
 except ImportError as e:
@@ -1121,30 +1122,15 @@ def _compute_preview_data(record_id: int) -> bytes:
     target_vertices, target_faces = load_mesh_file(str(shoe_path), mesh_quality='high')
     candidate_vertices, candidate_faces = load_mesh_file(str(blank_path), mesh_quality='high')
 
-    def _normalize(v: np.ndarray) -> np.ndarray:
-        n = np.linalg.norm(v)
-        return v if n == 0 else (v / n)
+    _normalize = _tf_normalize  # alias for local readability
 
-    def _build_frame(longitudinal: np.ndarray, vertical: np.ndarray) -> np.ndarray:
-        x = _normalize(longitudinal)
-        side = np.cross(x, vertical)
-        if np.linalg.norm(side) < 1e-6:
-            if abs(x[0]) < 0.9:
-                side = np.cross(x, np.array([1.0, 0.0, 0.0]))
-            else:
-                side = np.cross(x, np.array([0.0, 1.0, 0.0]))
-        y = _normalize(side)
-        z = _normalize(np.cross(x, y))
-        return np.column_stack([x, y, z])
+    rotation_matrix_align = compute_alignment_rotation(
+        target_vertices, target_faces,
+        candidate_vertices, candidate_faces,
+        mesh_matcher,
+    )
 
-    target_longitudinal_axis = _normalize(np.array(
-        mesh_matcher.MeshMatcher.compute_longitudinal_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()),
-        dtype=float))
-    target_vertical_axis = _normalize(np.array(
-        mesh_matcher.MeshMatcher.compute_vertical_axis(
-            target_vertices.flatten().tolist(), target_faces.flatten().tolist()),
-        dtype=float))
+    # Still need individual axes for downstream transformation
     candidate_longitudinal_axis = _normalize(np.array(
         mesh_matcher.MeshMatcher.compute_longitudinal_axis(
             candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()),
@@ -1153,10 +1139,6 @@ def _compute_preview_data(record_id: int) -> bytes:
         mesh_matcher.MeshMatcher.compute_vertical_axis(
             candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()),
         dtype=float))
-
-    target_frame = _build_frame(target_longitudinal_axis, target_vertical_axis)
-    candidate_frame = _build_frame(candidate_longitudinal_axis, candidate_vertical_axis)
-    rotation_matrix_align = candidate_frame @ target_frame.T
 
     target_center = np.mean(target_vertices, axis=0)
     target_vertices_aligned = (rotation_matrix_align @ (target_vertices - target_center).T).T + target_center
@@ -1178,13 +1160,7 @@ def _compute_preview_data(record_id: int) -> bytes:
     candidate_lateral_axis = _normalize(np.cross(longitudinal_axis, candidate_vertical_axis))
 
     angle_rad = math.radians(optimal_rotation_angle_deg)
-    cos_a, sin_a = math.cos(angle_rad), math.sin(angle_rad)
-    K = np.array([
-        [0, -longitudinal_axis[2], longitudinal_axis[1]],
-        [longitudinal_axis[2], 0, -longitudinal_axis[0]],
-        [-longitudinal_axis[1], longitudinal_axis[0], 0]
-    ])
-    R_rotate = np.eye(3) + sin_a * K + (1 - cos_a) * np.dot(K, K)
+    R_rotate = rodrigues_rotation(longitudinal_axis, angle_rad)
     translation_vec = longitudinal_axis * optimal_translation + candidate_lateral_axis * optimal_lateral_offset
 
     candidate_vertices_transformed = (

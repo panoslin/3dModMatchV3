@@ -1,4 +1,4 @@
-// 历史记录管理模块
+/** Match history: paginated list, detail drill-down, CSV/Excel export. */
 class HistoryManager {
   constructor() {
     this.currentPage = 1;
@@ -317,15 +317,9 @@ class HistoryManager {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   }
 
-  formatDate(dateString) {
-    if (!dateString) return '—';
-    return new Date(dateString).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  }
+  /** @see utils.js formatDate */
+  formatDate(dateString) { return formatDate(dateString); }
 
-  escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
+  /** @see utils.js escapeHtml */
+  escapeHtml(text) { return escapeHtml(text); }
 }

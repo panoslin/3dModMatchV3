@@ -4,22 +4,24 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <tuple>
 #include <Eigen/Dense>
 #include "kdtree.h"
 #include "bvh.h"
 
+/// @brief 方向对齐信息（鞋跟-鞋头 & 上下方向）
 struct DirectionAlignment {
     double heel_toe_alignment;      // 鞋跟-鞋头方向对齐分数 [0, 1]
     double vertical_alignment;       // 上下方向对齐分数 [0, 1]
     bool is_valid;                   // 是否满足严格对齐要求
     double heel_toe_angle_deg;       // 鞋跟-鞋头方向角度差（度）
     double vertical_angle_deg;       // 上下方向角度差（度）
-    
+
     DirectionAlignment() : heel_toe_alignment(0.0), vertical_alignment(0.0),
                           is_valid(false), heel_toe_angle_deg(0.0), vertical_angle_deg(0.0) {}
 };
 
-// 遗传算法参数
+/// @brief 遗传算法参数配置
 struct GeneticAlgorithmParams {
     int population_size;        // 种群大小（默认50）
     int max_generations;        // 最大代数（默认30）
@@ -53,7 +55,7 @@ struct GeneticAlgorithmParams {
           lateral_range(30.0) {}
 };
 
-// 用于“回放”的每代状态（遗传算法）
+/// @brief 遗传算法每代统计快照（用于前端回放）
 struct GenerationState {
     int generation;            // 代数（从 0 开始：0表示初始种群评估完成）
     double best_fitness;       // 最佳适应度（= 包裹率近似值）
@@ -79,14 +81,14 @@ struct GenerationState {
           time_ms(0.0) {}
 };
 
+/// @brief 单次匹配的完整结果
 struct MatchResult {
     int candidate_index;
     std::string candidate_path;
     double volume;
     bool is_fully_wrapped;
     double match_score;
-    
-    // 新增字段
+
     DirectionAlignment direction_alignment;  // 方向对齐信息
     double wrapping_ratio;                   // 体积包裹率 [0, 1]
     double percentile96_clearance;           // 96%分位数间隙（mm）：鞋模表面点到粗胚内表面的距离的96%分位数（仅统计在粗胚内的点）
@@ -112,54 +114,51 @@ class MeshMatcher {
 public:
     MeshMatcher();
     ~MeshMatcher();
-    
-    // 加载网格数据（从numpy数组）
-    bool loadTargetMesh(const std::vector<double>& vertices, 
+
+    /// @brief 加载目标鞋模网格（从 numpy 平铺数组）
+    bool loadTargetMesh(const std::vector<double>& vertices,
                        const std::vector<int>& faces);
-    bool loadCandidateMesh(const std::vector<double>& vertices, 
+    /// @brief 加载候选粗胚网格（从 numpy 平铺数组）
+    bool loadCandidateMesh(const std::vector<double>& vertices,
                           const std::vector<int>& faces);
-    
-    // 设置是否输出详细日志
+
+    /// @brief 设置是否输出详细日志
     void setVerbose(bool verbose);
-    
-    // 执行优化匹配（基于生产场景）
-    // 注意：方向会自动对齐
-    // 使用遗传算法（GA）进行优化
-    // 注意：penetration_tolerance 参数已废弃（包裹率100%即无穿模）
+
+    /// @brief 执行完整的优化匹配流水线（对齐→GA优化→包裹率→评分）
     MatchResult matchOptimized(double wrapping_threshold = 1.0,
                               const GeneticAlgorithmParams& ga_params = GeneticAlgorithmParams());
-    
-    // 计算网格体积
+
+    /// @brief 用有符号体积公式计算网格体积（mm³）
     static double computeVolume(const std::vector<double>& vertices,
                                const std::vector<int>& faces);
-    
-    // 计算主法线方向
+
+    /// @brief 计算面积加权平均法线方向
     static Eigen::Vector3d computePrincipalNormal(const std::vector<double>& vertices,
                                                   const std::vector<int>& faces);
-    
-    // 计算主要方向（纵向轴和垂直轴）
+
+    /// @brief 用 PCA 第一主成分计算纵向轴（鞋跟→鞋头）
     static Eigen::Vector3d computeLongitudinalAxis(const std::vector<double>& vertices,
                                                    const std::vector<int>& faces);
+    /// @brief 用主法线方向推断垂直轴（脚面→脚底）
     static Eigen::Vector3d computeVerticalAxis(const std::vector<double>& vertices,
                                                const std::vector<int>& faces);
-    
-    // 验证方向对齐（用于记录对齐信息）
-    // 注意：方向已经通过 alignDirections 自动对齐，此函数仅用于记录对齐信息
+
+    /// @brief 记录对齐后的方向角度信息（仅用于日志，不做校验）
     DirectionAlignment verifyDirectionAlignment(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
         const std::vector<double>& candidate_vertices,
         const std::vector<int>& candidate_faces);
-    
-    // 对齐方向（旋转鞋模使其与粗胚对齐）
-    // 返回旋转矩阵，并修改target_vertices使其与candidate对齐
+
+    /// @brief 旋转鞋模使其坐标系与粗胚对齐，返回旋转矩阵
     Eigen::Matrix3d alignDirections(
         std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
         const std::vector<double>& candidate_vertices,
         const std::vector<int>& candidate_faces);
-    
-    // 计算体积包裹率
+
+    /// @brief 计算鞋模在粗胚内的体积包裹率 [0,1]
     double computeWrappingRatio(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
@@ -168,8 +167,8 @@ public:
         const KDTree* cached_tree = nullptr,
         const std::vector<Eigen::Vector3d>* cached_face_centers = nullptr,
         const std::vector<Eigen::Vector3d>* cached_face_normals = nullptr);
-    
-    // 计算96%分位数间隙（对于在内部的点，计算它们到表面的距离的96%分位数）
+
+    /// @brief 计算在粗胚内的鞋模采样点到粗胚表面距离的96%分位数（mm）
     double computeAverageClearance(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
@@ -178,12 +177,8 @@ public:
         const KDTree* cached_tree = nullptr,
         const std::vector<Eigen::Vector3d>* cached_face_centers = nullptr,
         const std::vector<Eigen::Vector3d>* cached_face_normals = nullptr);
-    
-    // 使用遗传算法优化位置和旋转（全局搜索，避免局部最优）
-    // 优势：
-    // 1. 全局搜索，不易陷入局部最优
-    // 2. 不需要计算梯度，适合非平滑目标函数
-    // 3. 可以并行评估多个候选解
+
+    /// @brief 遗传算法全局优化纵向位移、旋转角度、横向位移
     double optimizePositionAndRotationGA(
         const std::vector<double>& target_vertices,
         const std::vector<int>& target_faces,
@@ -195,29 +190,60 @@ public:
         double& optimal_vertical_offset,
         double& optimal_lateral_offset,
         const GeneticAlgorithmParams& params = GeneticAlgorithmParams());
-    
+
 private:
-    // 使用KD-tree加速的距离计算
+    /// @brief 用 KD-tree 加速的符号距离：负=在网格内，正=在网格外
     double signedDistanceToMeshWithKDTree(const Eigen::Vector3d& point,
                                          const std::vector<double>& vertices,
                                          const std::vector<int>& faces,
                                          const KDTree& face_centers_tree,
                                          const std::vector<Eigen::Vector3d>& face_centers,
                                          const std::vector<Eigen::Vector3d>& face_normals);
-    
-    // 构建面的KD-tree（用于加速）
+
+    /// @brief 构建面中心 KD-tree（加速最近面查询）
     void buildFaceKDTree(const std::vector<double>& vertices,
                         const std::vector<int>& faces,
                         KDTree& tree,
                         std::vector<Eigen::Vector3d>& face_centers,
                         std::vector<Eigen::Vector3d>& face_normals);
-    
-    // 内部数据
+
+    /// @brief 从平铺顶点和面数组中取出第 face_idx 个三角形的三个顶点
+    static bool getTriangleVertices(const std::vector<double>& vertices,
+                                    const std::vector<int>& faces,
+                                    size_t face_idx,
+                                    Eigen::Vector3d& v0,
+                                    Eigen::Vector3d& v1,
+                                    Eigen::Vector3d& v2);
+
+    /// @brief 计算平铺顶点数组的几何质心
+    static Eigen::Vector3d computeCentroid(const std::vector<double>& vertices);
+
+    /// @brief 从目标顶点中均匀采样固定数量的点
+    static std::vector<Eigen::Vector3d> collectSamplePoints(
+        const std::vector<double>& target_vertices,
+        size_t max_samples);
+
+    /// @brief 若提供缓存则返回缓存指针，否则就地构建 KD-tree 并返回指针
+    struct KDTreeCache {
+        const KDTree* tree;
+        const std::vector<Eigen::Vector3d>* face_centers;
+        const std::vector<Eigen::Vector3d>* face_normals;
+    };
+    KDTreeCache resolveKDTreeCache(
+        const std::vector<double>& candidate_vertices,
+        const std::vector<int>& candidate_faces,
+        const KDTree* cached_tree,
+        const std::vector<Eigen::Vector3d>* cached_face_centers,
+        const std::vector<Eigen::Vector3d>* cached_face_normals,
+        KDTree& local_tree,
+        std::vector<Eigen::Vector3d>& local_face_centers,
+        std::vector<Eigen::Vector3d>& local_face_normals);
+
     std::vector<double> target_vertices_;
     std::vector<int> target_faces_;
     std::vector<double> candidate_vertices_;
     std::vector<int> candidate_faces_;
-    bool verbose_;  // 是否输出详细日志
+    bool verbose_;
 };
 
 #endif // MATCHER_H

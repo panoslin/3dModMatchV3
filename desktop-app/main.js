@@ -1,3 +1,4 @@
+/** Electron main process: spawns Flask backend, creates BrowserWindow, handles IPC. */
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { execSync, spawnSync } = require('child_process');
 const path = require('path');

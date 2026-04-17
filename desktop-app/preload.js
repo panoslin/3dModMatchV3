@@ -1,6 +1,5 @@
+/** Preload script: exposes safe Electron IPC bridge to the renderer process. */
 const { contextBridge, ipcRenderer } = require('electron');
-
-// 暴露安全的API给渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
   showOpenDialog: (options) => ipcRenderer.invoke('show-open-dialog', options),
   showSaveDialog: (options) => ipcRenderer.invoke('show-save-dialog', options),

@@ -1,7 +1,8 @@
-// API客户端
+/** REST API client — all methods are static, talks to the Flask backend. */
 const API_BASE_URL = 'http://127.0.0.1:5000/api';
 
 class API {
+  /** Generic fetch wrapper with JSON parsing and error handling. */
   static async request(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
     const defaultOptions = {

@@ -37,18 +37,7 @@ def find_optimal_match(
     verbose: bool = False,
     ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None
 ) -> Tuple[Optional[Path], dict]:
-    """
-    使用优化算法找到最优匹配
-    
-    Args:
-        target_file: 目标鞋模文件路径
-        candidate_files: 候选粗胚文件路径列表
-        wrapping_threshold: 包裹率阈值（默认0.99，即99%）
-        verbose: 是否输出详细信息
-        
-    Returns:
-        Tuple[Optional[Path], dict]: (最匹配的文件路径, 匹配结果信息)
-    """
+    """遍历所有候选粗胚，返回满足包裹率且体积最小的匹配。"""
     # 加载目标鞋模
     if verbose:
         print(f"加载目标鞋模: {target_file}")
@@ -230,18 +219,7 @@ def match_testcase_optimized(
     verbose: bool = False,
     ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None
 ) -> dict:
-    """
-    使用优化算法匹配单个测试用例
-    
-    Args:
-        testcase_dir: 测试用例目录路径
-        wrapping_threshold: 包裹率阈值
-        verbose: 是否输出详细信息
-        ga_params: 遗传算法参数（可选）
-        
-    Returns:
-        dict: 匹配结果统计
-    """
+    """对 testcase_dir 下所有 target 逐个匹配 candidate_set 中的粗胚。"""
     target_dir = testcase_dir / 'target'
     candidate_dir = testcase_dir / 'candidate_set'
     

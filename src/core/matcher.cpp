@@ -30,7 +30,7 @@ void MeshMatcher::setVerbose(bool verbose) {
 MeshMatcher::~MeshMatcher() {
 }
 
-bool MeshMatcher::loadTargetMesh(const std::vector<double>& vertices, 
+bool MeshMatcher::loadTargetMesh(const std::vector<double>& vertices,
                                  const std::vector<int>& faces) {
     if (vertices.size() % 3 != 0 || faces.size() % 3 != 0) {
         return false;
@@ -40,7 +40,7 @@ bool MeshMatcher::loadTargetMesh(const std::vector<double>& vertices,
     return true;
 }
 
-bool MeshMatcher::loadCandidateMesh(const std::vector<double>& vertices, 
+bool MeshMatcher::loadCandidateMesh(const std::vector<double>& vertices,
                                    const std::vector<int>& faces) {
     if (vertices.size() % 3 != 0 || faces.size() % 3 != 0) {
         return false;
@@ -50,46 +50,93 @@ bool MeshMatcher::loadCandidateMesh(const std::vector<double>& vertices,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 共享辅助函数
+// ---------------------------------------------------------------------------
+
+bool MeshMatcher::getTriangleVertices(const std::vector<double>& vertices,
+                                       const std::vector<int>& faces,
+                                       size_t face_idx,
+                                       Eigen::Vector3d& v0,
+                                       Eigen::Vector3d& v1,
+                                       Eigen::Vector3d& v2) {
+    size_t base = face_idx * 3;
+    if (base + 2 >= faces.size()) return false;
+    int idx0 = faces[base] * 3;
+    int idx1 = faces[base + 1] * 3;
+    int idx2 = faces[base + 2] * 3;
+    if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
+        idx1 + 2 >= static_cast<int>(vertices.size()) ||
+        idx2 + 2 >= static_cast<int>(vertices.size())) {
+        return false;
+    }
+    v0 = Eigen::Vector3d(vertices[idx0], vertices[idx0 + 1], vertices[idx0 + 2]);
+    v1 = Eigen::Vector3d(vertices[idx1], vertices[idx1 + 1], vertices[idx1 + 2]);
+    v2 = Eigen::Vector3d(vertices[idx2], vertices[idx2 + 1], vertices[idx2 + 2]);
+    return true;
+}
+
+Eigen::Vector3d MeshMatcher::computeCentroid(const std::vector<double>& vertices) {
+    Eigen::Vector3d center(0, 0, 0);
+    size_t count = vertices.size() / 3;
+    if (count == 0) return center;
+    for (size_t i = 0; i < vertices.size(); i += 3) {
+        center += Eigen::Vector3d(vertices[i], vertices[i + 1], vertices[i + 2]);
+    }
+    return center / static_cast<double>(count);
+}
+
+std::vector<Eigen::Vector3d> MeshMatcher::collectSamplePoints(
+    const std::vector<double>& target_vertices,
+    size_t max_samples) {
+    size_t num_vertices = target_vertices.size() / 3;
+    size_t num_to_check = std::min(max_samples, num_vertices);
+    if (num_to_check == 0) num_to_check = 1;
+    size_t step = num_vertices / num_to_check;
+    if (step == 0) step = 1;
+
+    std::vector<Eigen::Vector3d> points;
+    points.reserve(num_to_check);
+    for (size_t i = 0; i < target_vertices.size() && points.size() < num_to_check; i += 3 * step) {
+        points.emplace_back(target_vertices[i], target_vertices[i + 1], target_vertices[i + 2]);
+    }
+    return points;
+}
+
+MeshMatcher::KDTreeCache MeshMatcher::resolveKDTreeCache(
+    const std::vector<double>& candidate_vertices,
+    const std::vector<int>& candidate_faces,
+    const KDTree* cached_tree,
+    const std::vector<Eigen::Vector3d>* cached_face_centers,
+    const std::vector<Eigen::Vector3d>* cached_face_normals,
+    KDTree& local_tree,
+    std::vector<Eigen::Vector3d>& local_face_centers,
+    std::vector<Eigen::Vector3d>& local_face_normals) {
+    if (cached_tree && cached_face_centers && cached_face_normals) {
+        return {cached_tree, cached_face_centers, cached_face_normals};
+    }
+    buildFaceKDTree(candidate_vertices, candidate_faces, local_tree,
+                   local_face_centers, local_face_normals);
+    return {&local_tree, &local_face_centers, &local_face_normals};
+}
+
 double MeshMatcher::computeVolume(const std::vector<double>& vertices,
                                   const std::vector<int>& faces) {
     if (vertices.size() < 9 || faces.size() < 3) {
         return 0.0;
     }
-    
+
+    Eigen::Vector3d origin = computeCentroid(vertices);
     double volume = 0.0;
-    Eigen::Vector3d origin(0, 0, 0);
-    
-    // 计算质心作为原点
-    for (size_t i = 0; i < vertices.size(); i += 3) {
-        origin += Eigen::Vector3d(vertices[i], vertices[i+1], vertices[i+2]);
-    }
-    origin /= (vertices.size() / 3);
-    
-    // 使用有符号体积公式计算总体积
-    for (size_t i = 0; i < faces.size(); i += 3) {
-        int idx0 = faces[i] * 3;
-        int idx1 = faces[i+1] * 3;
-        int idx2 = faces[i+2] * 3;
-        
-        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
-            idx1 + 2 >= static_cast<int>(vertices.size()) ||
-            idx2 + 2 >= static_cast<int>(vertices.size())) {
-            continue;
-        }
-        
-        Eigen::Vector3d v0(vertices[idx0], vertices[idx0+1], vertices[idx0+2]);
-        Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
-        Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
-        
+    size_t num_faces = faces.size() / 3;
+    for (size_t fi = 0; fi < num_faces; ++fi) {
+        Eigen::Vector3d v0, v1, v2;
+        if (!getTriangleVertices(vertices, faces, fi, v0, v1, v2)) continue;
         v0 -= origin;
         v1 -= origin;
         v2 -= origin;
-        
-        // 有符号体积 = (v0 · (v1 × v2)) / 6
-        double signed_vol = v0.dot(v1.cross(v2)) / 6.0;
-        volume += std::abs(signed_vol);
+        volume += std::abs(v0.dot(v1.cross(v2)) / 6.0);
     }
-    
     return volume;
 }
 
@@ -98,50 +145,27 @@ Eigen::Vector3d MeshMatcher::computePrincipalNormal(const std::vector<double>& v
     if (faces.size() < 3) {
         return Eigen::Vector3d(0, 0, 1);
     }
-    
+
     Eigen::Vector3d normal_sum(0, 0, 0);
-    int valid_faces = 0;
-    
-    for (size_t i = 0; i < faces.size(); i += 3) {
-        int idx0 = faces[i] * 3;
-        int idx1 = faces[i+1] * 3;
-        int idx2 = faces[i+2] * 3;
-        
-        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
-            idx1 + 2 >= static_cast<int>(vertices.size()) ||
-            idx2 + 2 >= static_cast<int>(vertices.size())) {
-            continue;
-        }
-        
-        Eigen::Vector3d v0(vertices[idx0], vertices[idx0+1], vertices[idx0+2]);
-        Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
-        Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
-        
-        Eigen::Vector3d edge1 = v1 - v0;
-        Eigen::Vector3d edge2 = v2 - v0;
-        Eigen::Vector3d normal = edge1.cross(edge2);
-        
+    int valid_count = 0;
+    size_t num_faces = faces.size() / 3;
+    for (size_t fi = 0; fi < num_faces; ++fi) {
+        Eigen::Vector3d v0, v1, v2;
+        if (!getTriangleVertices(vertices, faces, fi, v0, v1, v2)) continue;
+        Eigen::Vector3d normal = (v1 - v0).cross(v2 - v0);
         double norm = normal.norm();
         if (norm > 1e-9) {
-            normal /= norm;
-            normal_sum += normal;
-            valid_faces++;
+            normal_sum += normal / norm;
+            valid_count++;
         }
     }
-    
-    if (valid_faces > 0) {
-        normal_sum /= valid_faces;
+
+    if (valid_count > 0) {
+        normal_sum /= valid_count;
         double norm = normal_sum.norm();
-        if (norm > 1e-9) {
-            normal_sum /= norm;
-        }
+        if (norm > 1e-9) return normal_sum / norm;
     }
-    
-    if (normal_sum.norm() < 1e-9) {
-        return Eigen::Vector3d(0, 0, 1);
-    }
-    
-    return normal_sum;
+    return Eigen::Vector3d(0, 0, 1);
 }
 
 void MeshMatcher::buildFaceKDTree(const std::vector<double>& vertices,
@@ -151,46 +175,22 @@ void MeshMatcher::buildFaceKDTree(const std::vector<double>& vertices,
                                   std::vector<Eigen::Vector3d>& face_normals) {
     face_centers.clear();
     face_normals.clear();
-    
     size_t num_faces = faces.size() / 3;
     face_centers.reserve(num_faces);
     face_normals.reserve(num_faces);
     std::vector<int> face_indices;
     face_indices.reserve(num_faces);
-    
-    for (size_t i = 0; i < faces.size(); i += 3) {
-        int idx0 = faces[i] * 3;
-        int idx1 = faces[i+1] * 3;
-        int idx2 = faces[i+2] * 3;
-        
-        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
-            idx1 + 2 >= static_cast<int>(vertices.size()) ||
-            idx2 + 2 >= static_cast<int>(vertices.size())) {
-            continue;
-        }
-        
-        Eigen::Vector3d v0(vertices[idx0], vertices[idx0+1], vertices[idx0+2]);
-        Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
-        Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
-        
-        // 计算面中心
-        Eigen::Vector3d center = (v0 + v1 + v2) / 3.0;
-        face_centers.push_back(center);
-        
-        // 计算面法线
-        Eigen::Vector3d edge1 = v1 - v0;
-        Eigen::Vector3d edge2 = v2 - v0;
-        Eigen::Vector3d normal = edge1.cross(edge2);
+
+    for (size_t fi = 0; fi < num_faces; ++fi) {
+        Eigen::Vector3d v0, v1, v2;
+        if (!getTriangleVertices(vertices, faces, fi, v0, v1, v2)) continue;
+        face_centers.push_back((v0 + v1 + v2) / 3.0);
+        Eigen::Vector3d normal = (v1 - v0).cross(v2 - v0);
         double norm = normal.norm();
-        if (norm > 1e-9) {
-            normal /= norm;
-        }
+        if (norm > 1e-9) normal /= norm;
         face_normals.push_back(normal);
-        
-        face_indices.push_back(i / 3);
+        face_indices.push_back(static_cast<int>(fi));
     }
-    
-    // 构建KD-tree
     tree.build(face_centers, face_indices);
 }
 
@@ -396,25 +396,18 @@ double MeshMatcher::signedDistanceToMeshWithKDTree(
 
 Eigen::Vector3d MeshMatcher::computeLongitudinalAxis(const std::vector<double>& vertices,
                                                      const std::vector<int>& faces) {
-    // 使用PCA（主成分分析）计算纵向轴
     if (vertices.size() < 9) {
         return Eigen::Vector3d(1, 0, 0);
     }
-    
+
     size_t num_vertices = vertices.size() / 3;
-    
-    // 1. 计算质心
-    Eigen::Vector3d centroid(0, 0, 0);
-    for (size_t i = 0; i < vertices.size(); i += 3) {
-        centroid += Eigen::Vector3d(vertices[i], vertices[i+1], vertices[i+2]);
-    }
-    centroid /= num_vertices;
-    
-    // 2. 构建协方差矩阵
+    Eigen::Vector3d centroid = computeCentroid(vertices);
+
+    // 构建协方差矩阵
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
     for (size_t i = 0; i < vertices.size(); i += 3) {
         Eigen::Vector3d v(vertices[i], vertices[i+1], vertices[i+2]);
-        v -= centroid;  // 减去质心
+        v -= centroid;
         covariance += v * v.transpose();
     }
     covariance /= num_vertices;
@@ -547,16 +540,8 @@ Eigen::Matrix3d MeshMatcher::alignDirections(
     // R = candidate_frame * target_frame^T
     Eigen::Matrix3d rotation_matrix = candidate_frame * target_frame.transpose();
     
-    // 计算质心（用于旋转）
-    Eigen::Vector3d target_center(0, 0, 0);
-    size_t target_count = target_vertices.size() / 3;
-    for (size_t i = 0; i < target_vertices.size(); i += 3) {
-        target_center += Eigen::Vector3d(target_vertices[i], 
-                                        target_vertices[i+1], 
-                                        target_vertices[i+2]);
-    }
-    target_center /= target_count;
-    
+    Eigen::Vector3d target_center = computeCentroid(target_vertices);
+
     // 应用旋转矩阵到所有顶点
     t0 = std::chrono::high_resolution_clock::now();
     LOG_IF_VERBOSE( "[LOG] alignDirections: 开始旋转 " << (target_vertices.size() / 3) << " 个顶点..." << std::endl);
@@ -625,153 +610,48 @@ double MeshMatcher::computeWrappingRatio(
     const KDTree* cached_tree,
     const std::vector<Eigen::Vector3d>* cached_face_centers,
     const std::vector<Eigen::Vector3d>* cached_face_normals) {
-    
+
     auto t0 = std::chrono::high_resolution_clock::now();
-    
-    // 检查固定500个顶点（或更少，如果网格顶点数不足）
-    size_t num_vertices = target_vertices.size() / 3;
-    if (num_vertices == 0) {
-        return 0.0;
-    }
-    
-    // 固定采样500个点
-    size_t num_to_check = std::min(static_cast<size_t>(500), num_vertices);
-    if (num_to_check == 0) {
-        num_to_check = 1;  // 至少检查1个点
-    }
+    if (target_vertices.size() / 3 == 0) return 0.0;
 
-    // 计算步长，确保均匀分布检查500个顶点
-    size_t step = num_vertices / num_to_check;
-    if (step == 0) step = 1;
+    // 采样 & KD-tree
+    auto points_to_check = collectSamplePoints(target_vertices, 500);
+    LOG_IF_VERBOSE("[LOG] computeWrappingRatio: 检查 " << points_to_check.size()
+              << "/" << (target_vertices.size() / 3) << " 个顶点..." << std::endl);
 
-    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 检查 " << num_to_check << "/" << num_vertices
-              << " 个顶点 (步长: " << step << ")..." << std::endl);
-
-    // 构建或使用缓存的KD-tree（用于加速距离查询）
-    const KDTree* face_centers_tree;
-    const std::vector<Eigen::Vector3d>* face_centers;
-    const std::vector<Eigen::Vector3d>* face_normals;
-    
     KDTree local_tree;
-    std::vector<Eigen::Vector3d> local_face_centers;
-    std::vector<Eigen::Vector3d> local_face_normals;
-    
-    long long dt_kdtree = 0;  // KD-tree构建耗时（如果使用缓存则为0）
-    
-    if (cached_tree && cached_face_centers && cached_face_normals) {
-        // 使用缓存的KD-tree
-        face_centers_tree = cached_tree;
-        face_centers = cached_face_centers;
-        face_normals = cached_face_normals;
-        LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 使用缓存的KD-tree" << std::endl);
-    } else {
-        // 构建新的KD-tree
-        auto t_kdtree = std::chrono::high_resolution_clock::now();
-        buildFaceKDTree(candidate_vertices, candidate_faces, local_tree, 
-                       local_face_centers, local_face_normals);
-        auto t_kdtree_end = std::chrono::high_resolution_clock::now();
-        dt_kdtree = std::chrono::duration_cast<std::chrono::milliseconds>(t_kdtree_end - t_kdtree).count();
-        LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 构建KD-tree耗时: " << dt_kdtree << "ms" << std::endl);
-        
-        face_centers_tree = &local_tree;
-        face_centers = &local_face_centers;
-        face_normals = &local_face_normals;
-    }
-    
-    // 收集要检查的点（每次使用不同的起始偏移，确保采样不同的点）
-    std::vector<Eigen::Vector3d> points_to_check;
-    points_to_check.reserve(num_to_check);
-    
-    // 使用固定起始偏移，确保每次调用选择相同的500个点（与前端查看/调试一致）
-    size_t start_offset = 0;
-    
-    for (size_t i = start_offset * 3; i < target_vertices.size(); i += 3 * step) {
-        points_to_check.push_back(Eigen::Vector3d(
-            target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
-        if (points_to_check.size() >= num_to_check) {
-            break;
-        }
-    }
-    
-    // 如果还没收集够，从开头继续
-    if (points_to_check.size() < num_to_check) {
-        for (size_t i = 0; i < target_vertices.size() && points_to_check.size() < num_to_check; i += 3 * step) {
-            // 避免重复添加
-            bool already_added = false;
-            Eigen::Vector3d candidate_point(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
-            for (const auto& existing : points_to_check) {
-                if ((existing - candidate_point).norm() < 1e-6) {
-                    already_added = true;
-                    break;
-                }
-            }
-            if (!already_added) {
-                points_to_check.push_back(candidate_point);
-            }
-        }
-    }
-    
+    std::vector<Eigen::Vector3d> local_fc, local_fn;
+    auto cache = resolveKDTreeCache(candidate_vertices, candidate_faces,
+                                    cached_tree, cached_face_centers, cached_face_normals,
+                                    local_tree, local_fc, local_fn);
+
     // 并行计算距离
-    auto t_distance_start = std::chrono::high_resolution_clock::now();
     std::vector<int> inside_flags(points_to_check.size(), 0);
-    size_t check_interval = std::max(static_cast<size_t>(1), points_to_check.size() / 10);  // 每10%输出一次进度
-    
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
     for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
         double dist = signedDistanceToMeshWithKDTree(
             points_to_check[idx], candidate_vertices, candidate_faces,
-            *face_centers_tree, *face_centers, *face_normals);
-
-        if (dist <= 0.1) {  // 容差，避免精度问题
+            *cache.tree, *cache.face_centers, *cache.face_normals);
+        if (dist <= 0.1) {
             inside_flags[idx] = 1;
         }
+    }
 
-        // 进度输出（线程安全）
-        if (idx % check_interval == 0) {
-            #ifdef _OPENMP
-            #pragma omp critical
-            #endif
-            {
-                LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 进度 " 
-                          << (idx * 100 / points_to_check.size()) 
-                          << "%, 已检查: " << idx << "/" << points_to_check.size() << std::endl);
-            }
-        }
-    }
-    auto t_distance_end = std::chrono::high_resolution_clock::now();
-    auto dt_distance = std::chrono::duration_cast<std::chrono::milliseconds>(t_distance_end - t_distance_start).count();
-    
-    // 统计结果
     int inside_count = 0;
-    int total_checked = points_to_check.size();
-    for (int flag : inside_flags) {
-        inside_count += flag;
-    }
-    
-    if (total_checked == 0) {
-        return 0.0;
-    }
-    
+    for (int flag : inside_flags) inside_count += flag;
+    int total_checked = static_cast<int>(points_to_check.size());
+    if (total_checked == 0) return 0.0;
+
+    double ratio = (inside_count == total_checked) ? 1.0
+                   : (static_cast<double>(inside_count) / total_checked);
+
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    double ratio = (inside_count == total_checked) ? 1.0 : (static_cast<double>(inside_count) / total_checked);
-    
-    // 详细性能分析
-    auto dt_sampling = dt - dt_kdtree - dt_distance;  // 点采样收集耗时
-    LOG_IF_VERBOSE( "[LOG] computeWrappingRatio: 完成，总耗时: " << dt << "ms" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   性能分析:" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]     - KD-tree构建: " << dt_kdtree << "ms" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]     - 点采样收集: " << (dt - dt_kdtree - dt_distance) << "ms" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]     - 距离计算: " << dt_distance << "ms (" << points_to_check.size() 
-              << "个点, 平均: " << std::fixed << std::setprecision(3) 
-              << (dt_distance / static_cast<double>(points_to_check.size())) << "ms/点)" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   包裹率: " << std::setprecision(2) << (ratio * 100) << "% (" 
+    LOG_IF_VERBOSE("[LOG] computeWrappingRatio: 完成，耗时: " << dt << "ms, "
+              << "包裹率: " << std::setprecision(2) << (ratio * 100) << "% ("
               << inside_count << "/" << total_checked << ")" << std::endl);
-    
-    // 包裹率 = 内部点数 / 总检查点数
-    // 只有当所有检查的点都在内部时，才返回1.0（严格100%）
     return ratio;
 }
 
@@ -783,126 +663,58 @@ double MeshMatcher::computeAverageClearance(
     const KDTree* cached_tree,
     const std::vector<Eigen::Vector3d>* cached_face_centers,
     const std::vector<Eigen::Vector3d>* cached_face_normals) {
-    
-    auto t0 = std::chrono::high_resolution_clock::now();
-    
-    // 使用与 computeWrappingRatio 相同的采样逻辑
-    size_t num_vertices = target_vertices.size() / 3;
-    if (num_vertices == 0) {
-        return 0.0;
-    }
-    
-    // 固定采样500个点
-    size_t num_to_check = std::min(static_cast<size_t>(500), num_vertices);
-    if (num_to_check == 0) {
-        num_to_check = 1;
-    }
 
-    size_t step = num_vertices / num_to_check;
-    if (step == 0) step = 1;
-    
-    // 构建或使用缓存的KD-tree
-    const KDTree* face_centers_tree;
-    const std::vector<Eigen::Vector3d>* face_centers;
-    const std::vector<Eigen::Vector3d>* face_normals;
-    
+    auto t0 = std::chrono::high_resolution_clock::now();
+    if (target_vertices.size() / 3 == 0) return 0.0;
+
+    // 采样 & KD-tree（与 computeWrappingRatio 共用辅助函数）
+    auto points_to_check = collectSamplePoints(target_vertices, 500);
+
     KDTree local_tree;
-    std::vector<Eigen::Vector3d> local_face_centers;
-    std::vector<Eigen::Vector3d> local_face_normals;
-    
-    if (cached_tree && cached_face_centers && cached_face_normals) {
-        face_centers_tree = cached_tree;
-        face_centers = cached_face_centers;
-        face_normals = cached_face_normals;
-    } else {
-        buildFaceKDTree(candidate_vertices, candidate_faces, local_tree, 
-                       local_face_centers, local_face_normals);
-        face_centers_tree = &local_tree;
-        face_centers = &local_face_centers;
-        face_normals = &local_face_normals;
-    }
-    
-    // 收集要检查的点（与 computeWrappingRatio 相同的逻辑）
-    std::vector<Eigen::Vector3d> points_to_check;
-    points_to_check.reserve(num_to_check);
-    
-    size_t start_offset = 0;
-    for (size_t i = start_offset * 3; i < target_vertices.size(); i += 3 * step) {
-        points_to_check.push_back(Eigen::Vector3d(
-            target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
-        if (points_to_check.size() >= num_to_check) {
-            break;
-        }
-    }
-    
-    if (points_to_check.size() < num_to_check) {
-        for (size_t i = 0; i < target_vertices.size() && points_to_check.size() < num_to_check; i += 3 * step) {
-            bool already_added = false;
-            Eigen::Vector3d candidate_point(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
-            for (const auto& existing : points_to_check) {
-                if ((existing - candidate_point).norm() < 1e-6) {
-                    already_added = true;
-                    break;
-                }
-            }
-            if (!already_added) {
-                points_to_check.push_back(candidate_point);
-            }
-        }
-    }
-    
-    // 计算距离并统计内部点的间隙
+    std::vector<Eigen::Vector3d> local_fc, local_fn;
+    auto cache = resolveKDTreeCache(candidate_vertices, candidate_faces,
+                                    cached_tree, cached_face_centers, cached_face_normals,
+                                    local_tree, local_fc, local_fn);
+
+    // 并行计算距离并收集内部点间隙
     std::vector<double> clearances;
     clearances.reserve(points_to_check.size());
-    
+
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
     for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
         double dist = signedDistanceToMeshWithKDTree(
             points_to_check[idx], candidate_vertices, candidate_faces,
-            *face_centers_tree, *face_centers, *face_normals);
-
-        // 只统计在内部的点（距离 <= 0.1），间隙 = |距离|
+            *cache.tree, *cache.face_centers, *cache.face_normals);
         if (dist <= 0.1) {
-            double clearance = std::abs(dist);
             #ifdef _OPENMP
             #pragma omp critical
             #endif
-            {
-                clearances.push_back(clearance);
-            }
+            { clearances.push_back(std::abs(dist)); }
         }
     }
-    
-    // 计算96%分位数间隙
-    if (clearances.empty()) {
-        return 0.0;  // 没有内部点，间隙为0
-    }
-    
-    // 对间隙值进行排序
+
+    if (clearances.empty()) return 0.0;
+
+    // 96% 分位数
     std::sort(clearances.begin(), clearances.end());
-    
-    // 计算96%分位数的索引
-    size_t percentile_index = static_cast<size_t>(std::ceil(clearances.size() * 0.96) - 1);
-    if (percentile_index >= clearances.size()) {
-        percentile_index = clearances.size() - 1;
-    }
-    double percentile96_clearance = clearances[percentile_index];
-    
+    size_t idx96 = static_cast<size_t>(std::ceil(clearances.size() * 0.96) - 1);
+    if (idx96 >= clearances.size()) idx96 = clearances.size() - 1;
+    double percentile96_clearance = clearances[idx96];
+
     auto t1 = std::chrono::high_resolution_clock::now();
     auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_IF_VERBOSE( "[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   内部点数: " << clearances.size() << "/" << points_to_check.size() << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   96%分位数间隙: " << std::fixed << std::setprecision(4) << percentile96_clearance << " mm" << std::endl);
-    
+    LOG_IF_VERBOSE("[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms, "
+              << "内部点: " << clearances.size() << "/" << points_to_check.size()
+              << ", 96%分位数间隙: " << std::fixed << std::setprecision(4)
+              << percentile96_clearance << " mm" << std::endl);
     return percentile96_clearance;
 }
 
 
-// 计算绕轴旋转的旋转矩阵（使用Rodrigues公式）
+/// @brief 用 Rodrigues 公式计算绕任意轴的旋转矩阵
 static Eigen::Matrix3d computeRotationMatrixAroundAxis(const Eigen::Vector3d& axis, double angle_rad) {
-    // 使用Rodrigues旋转公式
     Eigen::Vector3d normalized_axis = axis.normalized();
     double cos_a = std::cos(angle_rad);
     double sin_a = std::sin(angle_rad);
@@ -916,8 +728,7 @@ static Eigen::Matrix3d computeRotationMatrixAroundAxis(const Eigen::Vector3d& ax
     return R;
 }
 
-// ========== 遗传算法实现 ==========
-// 个体结构（表示一个候选解）
+/// @brief GA 个体：纵向位移 + 旋转角度 + 横向位移 → 适应度
 struct Individual {
     double translation;      // 纵向位移
     double rotation;        // 旋转角度
@@ -996,39 +807,15 @@ double MeshMatcher::optimizePositionAndRotationGA(
     LOG_IF_VERBOSE(std::string(70, '=') << std::endl);
     
     // 计算质心（用于变换）
-    Eigen::Vector3d target_center(0, 0, 0);
-    size_t target_count = target_vertices.size() / 3;
-    for (size_t i = 0; i < target_vertices.size(); i += 3) {
-        target_center += Eigen::Vector3d(target_vertices[i], target_vertices[i+1], target_vertices[i+2]);
-    }
-    target_center /= target_count;
-    
-    Eigen::Vector3d candidate_center(0, 0, 0);
-    size_t candidate_count = candidate_vertices.size() / 3;
-    for (size_t i = 0; i < candidate_vertices.size(); i += 3) {
-        candidate_center += Eigen::Vector3d(candidate_vertices[i], candidate_vertices[i+1], candidate_vertices[i+2]);
-    }
-    candidate_center /= candidate_count;
-    
+    Eigen::Vector3d target_center = computeCentroid(target_vertices);
+    Eigen::Vector3d candidate_center = computeCentroid(candidate_vertices);
+
     Eigen::Vector3d center_diff = target_center - candidate_center;
     double initial_translation = center_diff.dot(longitudinal_axis);
     double initial_lateral = center_diff.dot(lateral_axis);
-    
+
     // 固定采样点
-    size_t num_vertices = target_vertices.size() / 3;
-    size_t num_to_check = std::min(params.num_sample_points, num_vertices);
-    if (num_to_check == 0) num_to_check = 1;
-    size_t step = num_vertices / num_to_check;
-    if (step == 0) step = 1;
-    
-    std::vector<Eigen::Vector3d> fixed_sample_points;
-    fixed_sample_points.reserve(num_to_check);
-    
-    for (size_t i = 0; i < target_vertices.size(); i += 3 * step) {
-        fixed_sample_points.push_back(Eigen::Vector3d(
-            target_vertices[i], target_vertices[i+1], target_vertices[i+2]));
-        if (fixed_sample_points.size() >= num_to_check) break;
-    }
+    auto fixed_sample_points = collectSamplePoints(target_vertices, params.num_sample_points);
     
     // 预先构建基础KD-tree（保留用于兼容）
     KDTree base_tree;
@@ -1362,34 +1149,10 @@ double MeshMatcher::optimizePositionAndRotationGA(
         LOG_IF_VERBOSE("[GA] │  性能分析:" << std::endl);
         LOG_IF_VERBOSE("[GA] │    选择耗时: " << t_selection_ms << "ms" << std::endl);
         LOG_IF_VERBOSE("[GA] │    进化耗时: " << t_evolution_ms << "ms" << std::endl);
-        #ifdef _OPENMP
-        // 获取并行线程数（兼容 macOS 和 Linux）
-        int num_threads = 1;
-        #pragma omp parallel
-        {
-            #pragma omp single
-            {
-                num_threads = omp_get_num_threads();
-            }
-        }
-        if (num_threads > 1) {
-            LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
-                      << gen_fitness_calls << "次, 并行线程数: " << num_threads
-                      << ", 平均: " << std::fixed << std::setprecision(1)
-                      << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
-                      << "ms/次)" << std::endl);
-        } else {
-            LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
-                      << gen_fitness_calls << "次, 平均: " << std::fixed << std::setprecision(1)
-                      << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
-                      << "ms/次)" << std::endl);
-        }
-        #else
-        LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms (" 
+        LOG_IF_VERBOSE("[GA] │      其中适应度计算: " << gen_fitness_time_ms << "ms ("
                   << gen_fitness_calls << "次, 平均: " << std::fixed << std::setprecision(1)
-                  << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0) 
+                  << (gen_fitness_calls > 0 ? (static_cast<double>(gen_fitness_time_ms) / gen_fitness_calls) : 0.0)
                   << "ms/次)" << std::endl);
-        #endif
         LOG_IF_VERBOSE("[GA] │    排序耗时: " << t_sort_ms << "ms" << std::endl);
         LOG_IF_VERBOSE("[GA] │    总耗时: " << gen_time << "ms" << std::endl);
         LOG_IF_VERBOSE("[GA] └" << std::endl);
@@ -1554,16 +1317,7 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     // 计算旋转矩阵（用于最终变换粗胚）
     Eigen::Matrix3d final_rotation_matrix = computeRotationMatrixAroundAxis(longitudinal_axis, optimal_relative_rotation_angle_rad);
     
-    // 计算候选网格质心（用于旋转）
-    Eigen::Vector3d candidate_center(0, 0, 0);
-    size_t candidate_count = candidate_vertices_.size() / 3;
-    for (size_t i = 0; i < candidate_vertices_.size(); i += 3) {
-        candidate_center += Eigen::Vector3d(candidate_vertices_[i], 
-                                            candidate_vertices_[i+1], 
-                                            candidate_vertices_[i+2]);
-    }
-    candidate_center /= candidate_count;
-    
+    Eigen::Vector3d candidate_center = computeCentroid(candidate_vertices_);
     std::vector<double> optimized_candidate = candidate_vertices_;
     // 计算横向轴
     Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
