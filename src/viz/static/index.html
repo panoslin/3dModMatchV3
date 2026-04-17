@@ -261,7 +261,7 @@
     <div class="container">
         <div class="header">
             <h1>🔷 3DM 文件查看器</h1>
-            <p>上传并交互式查看 Rhino 3DM 文件</p>
+            <p>上传并交互式查看 Rhino 3DM 或 STL 文件</p>
             <div style="margin-top: 15px;">
                 <button id="viewModeBtn" class="btn" style="width: auto; margin: 0 5px; padding: 8px 15px;">查看模式</button>
                 <button id="matchModeBtn" class="btn" style="width: auto; margin: 0 5px; padding: 8px 15px; background: #ccc;">匹配模式</button>
@@ -277,7 +277,7 @@
                         <label for="fileInput" class="file-input-label" id="fileLabel">
                             <span id="fileLabelText">点击或拖拽文件到此处</span>
                         </label>
-                        <input type="file" id="fileInput" accept=".3dm">
+                        <input type="file" id="fileInput" accept=".3dm,.stl">
                     </div>
                     
                     <div class="mesh-quality">
@@ -312,7 +312,7 @@
                             <label for="targetFileInput" class="file-input-label">
                                 <span id="targetFileLabel">点击或拖拽鞋模文件</span>
                             </label>
-                            <input type="file" id="targetFileInput" accept=".3dm">
+                            <input type="file" id="targetFileInput" accept=".3dm,.stl">
                         </div>
                     </div>
                     
@@ -322,7 +322,7 @@
                             <label for="candidateFileInput" class="file-input-label">
                                 <span id="candidateFileLabel">点击或拖拽粗胚文件</span>
                             </label>
-                            <input type="file" id="candidateFileInput" accept=".3dm">
+                            <input type="file" id="candidateFileInput" accept=".3dm,.stl">
                         </div>
                     </div>
                     
@@ -373,7 +373,7 @@
                     </div>
                 </div>
                 <div class="empty-state" id="emptyState">
-                    请上传 3DM 文件开始查看
+                    请上传 .3dm 或 .stl 文件开始查看
                 </div>
             </div>
         </div>
@@ -487,12 +487,13 @@
             fileLabel.classList.remove('dragover');
             
             const files = e.dataTransfer.files;
-            if (files.length > 0 && files[0].name.endsWith('.3dm')) {
+            const name = files.length > 0 ? files[0].name.toLowerCase() : '';
+            if (files.length > 0 && (name.endsWith('.3dm') || name.endsWith('.stl'))) {
                 fileInput.files = files;
                 fileLabelText.textContent = files[0].name;
                 loadBtn.disabled = false;
             } else {
-                showError('请上传 .3dm 文件');
+                showError('请上传 .3dm 或 .stl 文件');
             }
         });
 

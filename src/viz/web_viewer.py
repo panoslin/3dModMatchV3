@@ -38,7 +38,7 @@ CORS(app)  # 允许跨域请求
 
 # 配置
 UPLOAD_FOLDER = tempfile.gettempdir()
-ALLOWED_EXTENSIONS = {'3dm'}
+ALLOWED_EXTENSIONS = {'3dm', 'stl'}
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 
@@ -65,7 +65,7 @@ def upload_file():
         return jsonify({'error': '没有选择文件'}), 400
     
     if not allowed_file(file.filename):
-        return jsonify({'error': '不支持的文件格式，请上传 .3dm 文件'}), 400
+        return jsonify({'error': '不支持的文件格式，请上传 .3dm 或 .stl 文件'}), 400
     
     try:
         # 保存临时文件
@@ -167,7 +167,7 @@ def get_file_info():
         return jsonify({'error': '没有选择文件'}), 400
     
     if not allowed_file(file.filename):
-        return jsonify({'error': '不支持的文件格式，请上传 .3dm 文件'}), 400
+        return jsonify({'error': '不支持的文件格式，请上传 .3dm 或 .stl 文件'}), 400
     
     try:
         # 保存临时文件
@@ -208,7 +208,7 @@ def match_files():
         return jsonify({'error': '请选择两个文件'}), 400
     
     if not allowed_file(target_file.filename) or not allowed_file(candidate_file.filename):
-        return jsonify({'error': '不支持的文件格式，请上传 .3dm 文件'}), 400
+        return jsonify({'error': '不支持的文件格式，请上传 .3dm 或 .stl 文件'}), 400
     
     target_path = None
     candidate_path = None
