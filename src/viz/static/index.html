@@ -185,6 +185,51 @@
             color: #666;
         }
 
+        /* ICP 热启动降级提醒横幅（只在 icp_status=unavailable 时显示） */
+        .icp-status-banner {
+            display: none;
+            margin: 10px 0 14px 0;
+            padding: 12px 14px;
+            background: #fff8d5;
+            border: 1px solid #e0c200;
+            border-left: 5px solid #d69b00;
+            border-radius: 6px;
+            color: #6b5200;
+            font-size: 0.92em;
+            line-height: 1.45;
+        }
+        .icp-status-banner.active {
+            display: block;
+        }
+        .icp-status-banner .banner-title {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        .icp-status-banner code {
+            background: #f4e8a8;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-family: SFMono-Regular, Menlo, monospace;
+            font-size: 0.95em;
+        }
+
+        /* pipeline 徽章（轻量小徽章，不显眼） */
+        .pipeline-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 1px 7px;
+            background: #eef1ff;
+            color: #4a58c9;
+            border-radius: 10px;
+            font-size: 0.75em;
+            font-weight: 600;
+            vertical-align: middle;
+        }
+        .pipeline-badge.icp {
+            background: #e0f5e4;
+            color: #2f8039;
+        }
+
         .loading {
             display: none;
             text-align: center;
@@ -335,7 +380,12 @@
                     
                     <div class="error" id="matchError"></div>
                 </div>
-                
+
+                <div class="icp-status-banner" id="icpStatusBanner">
+                    <div class="banner-title">⚠️ ICP 热启动当前环境不可用</div>
+                    <div id="icpStatusBannerBody"></div>
+                </div>
+
                 <div class="info-section" id="infoSection" style="display: none;">
                     <h3>📊 文件信息</h3>
                     <div id="infoContent"></div>
@@ -408,6 +458,8 @@
         const error = document.getElementById('error');
         const infoSection = document.getElementById('infoSection');
         const infoContent = document.getElementById('infoContent');
+        const icpStatusBanner = document.getElementById('icpStatusBanner');
+        const icpStatusBannerBody = document.getElementById('icpStatusBannerBody');
         const emptyState = document.getElementById('emptyState');
 
         // 初始化 Three.js 场景
@@ -713,6 +765,7 @@
             
             matchLoading.classList.add('active');
             matchError.classList.remove('active');
+            icpStatusBanner.classList.remove('active');
             matchBtn.disabled = true;
             
             try {
@@ -755,20 +808,40 @@
             matchError.classList.add('active');
         }
 
+        function renderIcpStatus(data) {
+            // 降级横幅：只在 icp_status=unavailable 时显示
+            const icpStatus = data && data.icp_status;
+            if (icpStatus === 'unavailable') {
+                const reason = data.icp_unavailable_reason || '(未提供原因)';
+                icpStatusBannerBody.innerHTML =
+                    `当前匹配已降级为 <strong>PCA 基础路径</strong>，对非水密 STL / PCA 失真场景可能欠佳。<br>` +
+                    `失败原因：<code>${reason}</code><br>` +
+                    `修复建议：在 web_viewer 运行环境执行 <code>pip install rtree trimesh</code>，然后重启 web_viewer.py。`;
+                icpStatusBanner.classList.add('active');
+            } else {
+                icpStatusBanner.classList.remove('active');
+            }
+        }
+
         function displayMatchResult(data) {
+            renderIcpStatus(data);
             infoSection.style.display = 'block';
             const match = data.match_result;
             const hasReplay = match.generation_history && match.generation_history.length > 0;
             const lateral = (match.optimal_lateral_offset !== undefined && match.optimal_lateral_offset !== null)
                 ? Number(match.optimal_lateral_offset)
                 : 0.0;
-            const targetWrappingRatio = match.target_wrapping_ratio !== undefined 
-                ? match.target_wrapping_ratio 
+            const targetWrappingRatio = match.target_wrapping_ratio !== undefined
+                ? match.target_wrapping_ratio
                 : 0.96;  // 默认96%
             const targetWrappingPercent = (targetWrappingRatio * 100).toFixed(2);
+            const pipelineUsed = data && data.pipeline_used ? data.pipeline_used : '';
+            const pipelineBadge = pipelineUsed
+                ? `<span class="pipeline-badge ${pipelineUsed}">pipeline: ${pipelineUsed.toUpperCase()}</span>`
+                : '';
             infoContent.innerHTML = `
                 <div class="info-item">
-                    <strong>匹配结果</strong>
+                    <strong>匹配结果${pipelineBadge}</strong>
                     <span>${match.is_fully_wrapped ? `✅ 达到目标包裹率 (${targetWrappingPercent}%)` : `❌ 未达到目标包裹率 (${targetWrappingPercent}%)`}</span>
                 </div>
                 <div class="info-item">

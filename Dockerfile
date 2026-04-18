@@ -13,25 +13,29 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     CMAKE_BUILD_TYPE=Release
 
-# 安装系统依赖（包括C++编译工具和CMake）
+# 安装系统依赖（包括C++编译工具、CMake、libspatialindex for rtree）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     cmake \
     make \
     libeigen3-dev \
+    libspatialindex-dev \
     git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # 安装 Python 依赖
+# rtree + scipy 用于 trimesh.registration.icp / trimesh.proximity.closest_point（ICP 热启动路径）
 RUN pip install --no-cache-dir \
     rhino3dm==8.17.0 \
     numpy==1.26.4 \
     pybind11==2.11.1 \
     Flask>=2.0.0 \
     Flask-CORS>=3.0.0 \
-    trimesh>=4.0
+    trimesh>=4.0 \
+    rtree>=1.0 \
+    scipy>=1.10
 
 # 复制源代码
 COPY src/biz/load_3dm.py /app/src/biz/

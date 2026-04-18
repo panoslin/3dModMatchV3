@@ -31,6 +31,26 @@ except ImportError:
     MATCHER_AVAILABLE = False
     print("警告: mesh_matcher 模块不可用，匹配功能将被禁用")
 
+# 预检 ICP 多起点热启动依赖（trimesh.registration + rtree）一次，启动期完成
+# 避免每个 /api/match 请求都尝试 import，失败原因缓存到全局供前端降级提示使用
+try:
+    from matcher import icp_warmstart_alignment, _apply_transform  # 来自 src/biz/matcher.py
+    import trimesh.registration  # 触发依赖检查
+    import rtree  # noqa: F401 — trimesh.proximity / contains 间接依赖
+    _ICP_AVAILABLE = True
+    _ICP_UNAVAILABLE_REASON = None
+except Exception as e:  # pragma: no cover — 依赖缺失时走降级分支
+    icp_warmstart_alignment = None  # type: ignore
+    _apply_transform = None  # type: ignore
+    _ICP_AVAILABLE = False
+    _ICP_UNAVAILABLE_REASON = repr(e)
+    print(
+        f"警告: ICP 热启动不可用（{_ICP_UNAVAILABLE_REASON}）；"
+        f"匹配将降级到 PCA 基础路径。"
+        f"如需启用，请确认依赖已安装: pip install rtree trimesh",
+        file=sys.stderr,
+    )
+
 # 设置静态文件目录（兼容本地和 Docker 环境）
 static_folder = Path(__file__).parent / 'static'
 app = Flask(__name__, static_folder=str(static_folder), static_url_path='')
@@ -237,27 +257,80 @@ def match_files():
         
         # 执行匹配
         wrapping_threshold = float(request.form.get('wrapping_threshold', 0.99))
-        
+
         # 创建 GA 参数，使用目标包裹率（默认96%）
         ga_params = mesh_matcher.GeneticAlgorithmParams()
         ga_params.target_wrapping_ratio = wrapping_threshold  # 使用前端传入的目标包裹率
-        
-        result = matcher.match_optimized(
+
+        # ============================================================
+        # 路径 A: PCA 方向对齐 + GA (默认流水线)
+        # ============================================================
+        result_pca = matcher.match_optimized(
             wrapping_threshold=wrapping_threshold,
-            ga_params=ga_params
-        )
-        
-        # 复刻 C++ alignDirections：旋转鞋模使其坐标系与粗胚对齐
-        rotation_matrix_align = compute_alignment_rotation(
-            target_vertices, target_faces,
-            candidate_vertices, candidate_faces,
-            mesh_matcher,
+            ga_params=ga_params,
         )
 
-        # 旋转 target 顶点（绕 target 质心旋转）
-        target_center = np.mean(target_vertices, axis=0)
-        target_vertices_aligned = target_vertices - target_center
-        target_vertices_aligned = (rotation_matrix_align @ target_vertices_aligned.T).T + target_center
+        # ============================================================
+        # 路径 B: ICP 多起点热启动 + C++ skip_align_directions (若依赖可用)
+        # ============================================================
+        icp_status = 'ok' if _ICP_AVAILABLE else 'unavailable'
+        icp_unavailable_reason = _ICP_UNAVAILABLE_REASON
+        result_icp = None
+        icp_transform = None  # 4x4 齐次矩阵：ICP 对 target 的前置刚体变换
+        if _ICP_AVAILABLE:
+            try:
+                M_icp, _icp_cost = icp_warmstart_alignment(
+                    target_vertices, target_faces,
+                    candidate_vertices, candidate_faces,
+                )
+                aligned_target_icp = _apply_transform(target_vertices, M_icp)
+                matcher_icp = mesh_matcher.MeshMatcher()
+                matcher_icp.load_target_mesh(aligned_target_icp, target_faces)
+                matcher_icp.load_candidate_mesh(candidate_vertices, candidate_faces)
+                result_icp = matcher_icp.match_optimized(
+                    wrapping_threshold=wrapping_threshold,
+                    ga_params=ga_params,
+                    skip_align_directions=True,
+                )
+                icp_transform = M_icp
+            except Exception as e:  # 运行时失败：静默降级到 PCA
+                icp_status = 'unavailable'
+                icp_unavailable_reason = repr(e)
+                result_icp = None
+                icp_transform = None
+
+        # 选胜：wrap 较高者胜出；并列取 volume 较小者
+        use_icp = False
+        if result_icp is not None:
+            w_pca = result_pca.wrapping_ratio
+            w_icp = result_icp.wrapping_ratio
+            if (w_icp > w_pca + 1e-4) or (
+                abs(w_icp - w_pca) <= 1e-4 and result_icp.volume < result_pca.volume
+            ):
+                use_icp = True
+
+        result = result_icp if use_icp else result_pca
+        pipeline_used = 'icp' if use_icp else 'pca'
+
+        # ============================================================
+        # 计算用于可视化的 target 对齐变换
+        #   PCA 路径：使用 compute_alignment_rotation 返回的 R，绕 target 质心旋转
+        #   ICP 路径：使用 ICP 的 4x4 M，v' = R·v + t（无需绕质心）
+        # ============================================================
+        if use_icp:
+            rotation_matrix_align = np.asarray(icp_transform[:3, :3], dtype=float)
+            icp_translation = np.asarray(icp_transform[:3, 3], dtype=float)
+            target_vertices_aligned = (rotation_matrix_align @ target_vertices.T).T + icp_translation
+        else:
+            rotation_matrix_align = compute_alignment_rotation(
+                target_vertices, target_faces,
+                candidate_vertices, candidate_faces,
+                mesh_matcher,
+            )
+            # 旋转 target 顶点（绕 target 质心旋转）
+            target_center = np.mean(target_vertices, axis=0)
+            target_vertices_aligned = target_vertices - target_center
+            target_vertices_aligned = (rotation_matrix_align @ target_vertices_aligned.T).T + target_center
 
         # 计算纵向轴和质心（用于构建转换矩阵）
         longitudinal_axis = np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
@@ -362,8 +435,10 @@ def match_files():
             except Exception as e:
                 print(f"警告: 读取 generation_history 失败: {e}")
 
-        return jsonify({
+        response_body = {
             'success': True,
+            'pipeline_used': pipeline_used,
+            'icp_status': icp_status,
             'match_result': {
                 'volume': result.volume,
                 'wrapping_ratio': result.wrapping_ratio,
@@ -413,7 +488,10 @@ def match_files():
                     'lateral_axis': candidate_lateral_axis_transformed.tolist()
                 }
             }
-        })
+        }
+        if icp_status == 'unavailable' and icp_unavailable_reason:
+            response_body['icp_unavailable_reason'] = icp_unavailable_reason
+        return jsonify(response_body)
         
     except MeshFileError as e:
         return jsonify({'error': f'文件读取错误: {str(e)}'}), 400
@@ -459,4 +537,5 @@ if __name__ == '__main__':
     
     # 在生产环境中关闭 debug 模式
     debug_mode = os.getenv('FLASK_ENV') != 'production'
-    app.run(debug=debug_mode, host='0.0.0.0', port=5000)
+    port = int(os.getenv('PORT', '5000'))
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
