@@ -138,9 +138,9 @@ private:
     // 射线-三角形相交测试（Möller-Trumbore 算法）
     bool rayTriangleIntersect(const Ray& ray, const Triangle& tri, double& t) const;
     
-    // BVH 射线投射（递归）
+    // BVH 射线投射（递归）：收集全部交点的 t 值（供去重后做奇偶判定）
     void rayCastRecursive(const Ray& ray, const BVHNode* node,
-                         int& intersection_count) const;
+                         std::vector<double>& hit_ts) const;
     
     // 计算点到三角形的最短距离
     double pointTriangleDistance(const Eigen::Vector3d& point,

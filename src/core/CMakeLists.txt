@@ -51,7 +51,6 @@ set(SOURCES
     matcher.cpp
     bvh.cpp
     pybind_wrapper.cpp
-    kdtree.h
     bvh.h
 )
 

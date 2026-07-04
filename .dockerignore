@@ -31,3 +31,5 @@ test_results/
 .idea/
 *.swp
 *.swo
+
+src/core/build/

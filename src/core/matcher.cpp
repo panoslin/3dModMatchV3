@@ -35,6 +35,7 @@ bool MeshMatcher::loadTargetMesh(const std::vector<double>& vertices,
     if (vertices.size() % 3 != 0 || faces.size() % 3 != 0) {
         return false;
     }
+    std::lock_guard<std::mutex> lock(state_mutex_);
     target_vertices_ = vertices;
     target_faces_ = faces;
     return true;
@@ -45,8 +46,10 @@ bool MeshMatcher::loadCandidateMesh(const std::vector<double>& vertices,
     if (vertices.size() % 3 != 0 || faces.size() % 3 != 0) {
         return false;
     }
+    std::lock_guard<std::mutex> lock(state_mutex_);
     candidate_vertices_ = vertices;
     candidate_faces_ = faces;
+    candidate_bvh_cache_valid_ = false;  // 失效缓存
     return true;
 }
 
@@ -88,36 +91,79 @@ Eigen::Vector3d MeshMatcher::computeCentroid(const std::vector<double>& vertices
 
 std::vector<Eigen::Vector3d> MeshMatcher::collectSamplePoints(
     const std::vector<double>& target_vertices,
+    const std::vector<int>& target_faces,
     size_t max_samples) {
-    size_t num_vertices = target_vertices.size() / 3;
-    size_t num_to_check = std::min(max_samples, num_vertices);
-    if (num_to_check == 0) num_to_check = 1;
-    size_t step = num_vertices / num_to_check;
-    if (step == 0) step = 1;
-
     std::vector<Eigen::Vector3d> points;
-    points.reserve(num_to_check);
-    for (size_t i = 0; i < target_vertices.size() && points.size() < num_to_check; i += 3 * step) {
-        points.emplace_back(target_vertices[i], target_vertices[i + 1], target_vertices[i + 2]);
+    if (max_samples == 0 || target_vertices.size() < 3) return points;
+
+    // 回退路径：无面数据时按顶点步长采样（历史行为）
+    if (target_faces.size() < 3) {
+        size_t num_vertices = target_vertices.size() / 3;
+        size_t num_to_check = std::min(max_samples, num_vertices);
+        if (num_to_check == 0) num_to_check = 1;
+        size_t step = num_vertices / num_to_check;
+        if (step == 0) step = 1;
+        points.reserve(num_to_check);
+        for (size_t i = 0; i < target_vertices.size() && points.size() < num_to_check; i += 3 * step) {
+            points.emplace_back(target_vertices[i], target_vertices[i + 1], target_vertices[i + 2]);
+        }
+        return points;
+    }
+
+    // 面积加权采样：累计面积 + 二分查找选面，重心坐标均匀取点。
+    // 固定种子保证确定性（同网格同采样，与 GA 固定种子同一原则）。
+    size_t num_faces = target_faces.size() / 3;
+    std::vector<double> cum_area;
+    cum_area.reserve(num_faces);
+    std::vector<size_t> face_ids;
+    face_ids.reserve(num_faces);
+    double total = 0.0;
+    for (size_t fi = 0; fi < num_faces; ++fi) {
+        Eigen::Vector3d v0, v1, v2;
+        if (!getTriangleVertices(target_vertices, target_faces, fi, v0, v1, v2)) continue;
+        double a = 0.5 * (v1 - v0).cross(v2 - v0).norm();
+        if (a < 1e-12) continue;  // 退化面不参与采样
+        total += a;
+        cum_area.push_back(total);
+        face_ids.push_back(fi);
+    }
+    if (cum_area.empty() || total <= 0.0) return points;
+
+    std::mt19937 rng(0xA5EED123u);
+    std::uniform_real_distribution<double> uni(0.0, 1.0);
+    points.reserve(max_samples);
+    for (size_t i = 0; i < max_samples; ++i) {
+        double r = uni(rng) * total;
+        size_t k = std::lower_bound(cum_area.begin(), cum_area.end(), r) - cum_area.begin();
+        if (k >= face_ids.size()) k = face_ids.size() - 1;
+        Eigen::Vector3d v0, v1, v2;
+        if (!getTriangleVertices(target_vertices, target_faces, face_ids[k], v0, v1, v2)) continue;
+        double u = uni(rng), v = uni(rng);
+        if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }  // 折叠到三角形内，保持均匀
+        points.emplace_back(v0 + u * (v1 - v0) + v * (v2 - v0));
     }
     return points;
 }
 
-MeshMatcher::KDTreeCache MeshMatcher::resolveKDTreeCache(
-    const std::vector<double>& candidate_vertices,
-    const std::vector<int>& candidate_faces,
-    const KDTree* cached_tree,
-    const std::vector<Eigen::Vector3d>* cached_face_centers,
-    const std::vector<Eigen::Vector3d>* cached_face_normals,
-    KDTree& local_tree,
-    std::vector<Eigen::Vector3d>& local_face_centers,
-    std::vector<Eigen::Vector3d>& local_face_normals) {
-    if (cached_tree && cached_face_centers && cached_face_normals) {
-        return {cached_tree, cached_face_centers, cached_face_normals};
+// 最终指标的采样数下限：500 采样在 96% 附近的读数标准差约 0.9pp，
+// 足以造成阈值边界误判；5000 采样将其压到约 0.28pp（BVH 下每点 ~0.1ms，
+// 额外成本 <0.5s/候选）。GA 适应度不受此下限影响（由 num_sample_points 控制）。
+static constexpr size_t FINAL_METRIC_MIN_SAMPLES = 5000;
+
+std::vector<double> MeshMatcher::computeSampleSignedDistances(
+    const std::vector<double>& target_vertices,
+    const std::vector<int>& target_faces,
+    const BVHTree& candidate_bvh,
+    size_t num_samples) {
+    auto points = collectSamplePoints(target_vertices, target_faces, num_samples);
+    std::vector<double> distances(points.size(), 0.0);
+    #ifdef _OPENMP
+    #pragma omp parallel for
+    #endif
+    for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        distances[i] = candidate_bvh.signedDistance(points[i]);
     }
-    buildFaceKDTree(candidate_vertices, candidate_faces, local_tree,
-                   local_face_centers, local_face_normals);
-    return {&local_tree, &local_face_centers, &local_face_normals};
+    return distances;
 }
 
 double MeshMatcher::computeVolume(const std::vector<double>& vertices,
@@ -168,229 +214,6 @@ Eigen::Vector3d MeshMatcher::computePrincipalNormal(const std::vector<double>& v
     return Eigen::Vector3d(0, 0, 1);
 }
 
-void MeshMatcher::buildFaceKDTree(const std::vector<double>& vertices,
-                                  const std::vector<int>& faces,
-                                  KDTree& tree,
-                                  std::vector<Eigen::Vector3d>& face_centers,
-                                  std::vector<Eigen::Vector3d>& face_normals) {
-    face_centers.clear();
-    face_normals.clear();
-    size_t num_faces = faces.size() / 3;
-    face_centers.reserve(num_faces);
-    face_normals.reserve(num_faces);
-    std::vector<int> face_indices;
-    face_indices.reserve(num_faces);
-
-    for (size_t fi = 0; fi < num_faces; ++fi) {
-        Eigen::Vector3d v0, v1, v2;
-        if (!getTriangleVertices(vertices, faces, fi, v0, v1, v2)) continue;
-        face_centers.push_back((v0 + v1 + v2) / 3.0);
-        Eigen::Vector3d normal = (v1 - v0).cross(v2 - v0);
-        double norm = normal.norm();
-        if (norm > 1e-9) normal /= norm;
-        face_normals.push_back(normal);
-        face_indices.push_back(static_cast<int>(fi));
-    }
-    tree.build(face_centers, face_indices);
-}
-
-double MeshMatcher::signedDistanceToMeshWithKDTree(
-    const Eigen::Vector3d& point,
-    const std::vector<double>& vertices,
-    const std::vector<int>& faces,
-    const KDTree& face_centers_tree,
-    const std::vector<Eigen::Vector3d>& face_centers,
-    const std::vector<Eigen::Vector3d>& face_normals) {
-    
-    // 计算点到三角形的最短距离（用于返回距离幅值）
-    auto pointTriangleDistanceSquared = [](const Eigen::Vector3d& p,
-                                          const Eigen::Vector3d& a,
-                                          const Eigen::Vector3d& b,
-                                          const Eigen::Vector3d& c) -> double {
-        // Reference: Real-Time Collision Detection (Christer Ericson)
-        Eigen::Vector3d ab = b - a;
-        Eigen::Vector3d ac = c - a;
-        Eigen::Vector3d ap = p - a;
-
-        double d1 = ab.dot(ap);
-        double d2 = ac.dot(ap);
-        if (d1 <= 0.0 && d2 <= 0.0) return (p - a).squaredNorm(); // barycentric (1,0,0)
-
-        Eigen::Vector3d bp = p - b;
-        double d3 = ab.dot(bp);
-        double d4 = ac.dot(bp);
-        if (d3 >= 0.0 && d4 <= d3) return (p - b).squaredNorm(); // barycentric (0,1,0)
-
-        double vc = d1 * d4 - d3 * d2;
-        if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
-            double v = d1 / (d1 - d3);
-            Eigen::Vector3d proj = a + v * ab;
-            return (p - proj).squaredNorm(); // edge AB
-        }
-
-        Eigen::Vector3d cp = p - c;
-        double d5 = ab.dot(cp);
-        double d6 = ac.dot(cp);
-        if (d6 >= 0.0 && d5 <= d6) return (p - c).squaredNorm(); // barycentric (0,0,1)
-
-        double vb = d5 * d2 - d1 * d6;
-        if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
-            double w = d2 / (d2 - d6);
-            Eigen::Vector3d proj = a + w * ac;
-            return (p - proj).squaredNorm(); // edge AC
-        }
-
-        double va = d3 * d6 - d5 * d4;
-        if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
-            double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-            Eigen::Vector3d proj = b + w * (c - b);
-            return (p - proj).squaredNorm(); // edge BC
-        }
-
-        // inside face region
-        double denom = 1.0 / (va + vb + vc);
-        double v = vb * denom;
-        double w = vc * denom;
-        Eigen::Vector3d proj = a + ab * v + ac * w;
-        return (p - proj).squaredNorm();
-    };
-
-    // 使用KD-tree找到最近的面中心
-    auto nearest = face_centers_tree.nearestNeighbor(point);
-    if (nearest.second < 0) {
-        return std::numeric_limits<double>::max();
-    }
-    
-    int nearest_face_idx = nearest.second;
-    
-    // 说明：
-    // - 为了“点到表面最短距离”的幅值计算，我们仍然使用 KD-tree 在局部范围找候选面来加速。
-    // - 为了和前端 Three.js Raycaster 的“整网格计交点（奇偶法）”完全同步，
-    //   交点统计必须遍历整张网格的所有三角形（不依赖 KD-tree 的 radiusSearch 结果）。
-    double search_radius = 10.0;
-    std::vector<std::pair<Eigen::Vector3d, int>> nearby_faces;
-    face_centers_tree.radiusSearch(point, search_radius, nearby_faces);
-    if (nearby_faces.empty()) {
-        search_radius *= 10.0;
-        face_centers_tree.radiusSearch(point, search_radius, nearby_faces);
-    }
-    
-    // 如果还是没有，使用原始方法（但只检查最近的面）
-    if (nearby_faces.empty()) {
-        // 回退到检查最近的面
-        int face_idx = nearest_face_idx * 3;
-        if (face_idx + 2 < static_cast<int>(faces.size())) {
-            int idx0 = faces[face_idx] * 3;
-            int idx1 = faces[face_idx + 1] * 3;
-            int idx2 = faces[face_idx + 2] * 3;
-            
-            if (idx0 + 2 < static_cast<int>(vertices.size()) &&
-                idx1 + 2 < static_cast<int>(vertices.size()) &&
-                idx2 + 2 < static_cast<int>(vertices.size())) {
-                
-                Eigen::Vector3d v0(vertices[idx0], vertices[idx0+1], vertices[idx0+2]);
-                Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
-                Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
-                
-                Eigen::Vector3d edge1 = v1 - v0;
-                Eigen::Vector3d edge2 = v2 - v0;
-                Eigen::Vector3d normal = edge1.cross(edge2);
-                double area = normal.norm();
-                if (area > 1e-9) {
-                    normal /= area;
-                    Eigen::Vector3d to_point = point - v0;
-                    double dist = to_point.dot(normal);
-                    return dist;
-                }
-            }
-        }
-        return std::numeric_limits<double>::max();
-    }
-    
-    // 使用射线投射法判断点内外（与前端一致：固定 +X 方向，交点奇偶法）
-    // 同时计算点到三角形的最短距离作为返回的距离幅值。
-    //
-    // 关键同步点（对齐 Three.js Raycaster 的常见处理方式）：
-    // 1) 射线起点沿射线方向做一个极小偏移，避免“恰好在表面/边/顶点”导致交点奇偶翻转。
-    // 2) 对交点的 t 做去重（同一几何位置可能被相邻两个三角形同时命中），避免重复计数。
-    double min_dist2 = std::numeric_limits<double>::max();
-    const Eigen::Vector3d ray_dir(1, 0, 0);
-    const Eigen::Vector3d ray_origin = point + ray_dir * 1e-4; // 与前端一致的微偏移
-    int intersection_count = 0;
-    
-    for (const auto& face_pair : nearby_faces) {
-        int face_idx = face_pair.second * 3;
-        if (face_idx + 2 >= static_cast<int>(faces.size())) continue;
-        
-        int idx0 = faces[face_idx] * 3;
-        int idx1 = faces[face_idx + 1] * 3;
-        int idx2 = faces[face_idx + 2] * 3;
-        
-        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
-            idx1 + 2 >= static_cast<int>(vertices.size()) ||
-            idx2 + 2 >= static_cast<int>(vertices.size())) {
-            continue;
-        }
-        
-        Eigen::Vector3d v0(vertices[idx0], vertices[idx0+1], vertices[idx0+2]);
-        Eigen::Vector3d v1(vertices[idx1], vertices[idx1+1], vertices[idx1+2]);
-        Eigen::Vector3d v2(vertices[idx2], vertices[idx2+1], vertices[idx2+2]);
-        
-        // 更新点到三角形的最短距离（用于返回值）
-        Eigen::Vector3d edge1 = v1 - v0;
-        Eigen::Vector3d edge2 = v2 - v0;
-        Eigen::Vector3d normal = edge1.cross(edge2);
-        double area2 = normal.norm();
-        if (area2 < 1e-9) continue; // 退化三角形
-
-        min_dist2 = std::min(min_dist2, pointTriangleDistanceSquared(point, v0, v1, v2));
-        
-        // 射线交点统计不在这里做（这里的循环仅用于距离幅值的局部加速估计）
-    }
-
-    // 射线-三角形相交测试（Möller-Trumbore），遍历整张网格的所有三角形，确保与前端一致
-    for (size_t fi = 0; fi + 2 < faces.size(); fi += 3) {
-        int idx0 = faces[fi] * 3;
-        int idx1 = faces[fi + 1] * 3;
-        int idx2 = faces[fi + 2] * 3;
-
-        if (idx0 + 2 >= static_cast<int>(vertices.size()) ||
-            idx1 + 2 >= static_cast<int>(vertices.size()) ||
-            idx2 + 2 >= static_cast<int>(vertices.size())) {
-            continue;
-        }
-
-        const Eigen::Vector3d v0(vertices[idx0], vertices[idx0 + 1], vertices[idx0 + 2]);
-        const Eigen::Vector3d v1(vertices[idx1], vertices[idx1 + 1], vertices[idx1 + 2]);
-        const Eigen::Vector3d v2(vertices[idx2], vertices[idx2 + 1], vertices[idx2 + 2]);
-
-        const Eigen::Vector3d edge1 = v1 - v0;
-        const Eigen::Vector3d edge2 = v2 - v0;
-
-        const Eigen::Vector3d h = ray_dir.cross(edge2);
-        const double a = edge1.dot(h);
-        if (std::abs(a) < 1e-9) continue;
-
-        const double f = 1.0 / a;
-        const Eigen::Vector3d s = ray_origin - v0;
-        const double u_ray = f * s.dot(h);
-        if (u_ray < 0.0 || u_ray > 1.0) continue;
-
-        const Eigen::Vector3d q = s.cross(edge1);
-        const double v_ray = f * ray_dir.dot(q);
-        if (v_ray < 0.0 || u_ray + v_ray > 1.0) continue;
-
-        const double t = f * edge2.dot(q);
-        if (t > 1e-9) {
-            intersection_count++;
-        }
-    }
-
-    bool is_inside = (intersection_count % 2 == 1);
-    double min_distance = (min_dist2 == std::numeric_limits<double>::max()) ? std::numeric_limits<double>::max()
-                                                                           : std::sqrt(min_dist2);
-    return is_inside ? -min_distance : min_distance;
-}
 
 
 
@@ -602,115 +425,38 @@ DirectionAlignment MeshMatcher::verifyDirectionAlignment(
     return alignment;
 }
 
-double MeshMatcher::computeWrappingRatio(
-    const std::vector<double>& target_vertices,
-    const std::vector<int>& target_faces,
-    const std::vector<double>& candidate_vertices,
-    const std::vector<int>& candidate_faces,
-    const KDTree* cached_tree,
-    const std::vector<Eigen::Vector3d>* cached_face_centers,
-    const std::vector<Eigen::Vector3d>* cached_face_normals) {
 
-    auto t0 = std::chrono::high_resolution_clock::now();
-    if (target_vertices.size() / 3 == 0) return 0.0;
-
-    // 采样 & KD-tree
-    auto points_to_check = collectSamplePoints(target_vertices, 500);
-    LOG_IF_VERBOSE("[LOG] computeWrappingRatio: 检查 " << points_to_check.size()
-              << "/" << (target_vertices.size() / 3) << " 个顶点..." << std::endl);
-
-    KDTree local_tree;
-    std::vector<Eigen::Vector3d> local_fc, local_fn;
-    auto cache = resolveKDTreeCache(candidate_vertices, candidate_faces,
-                                    cached_tree, cached_face_centers, cached_face_normals,
-                                    local_tree, local_fc, local_fn);
-
-    // 并行计算距离
-    std::vector<int> inside_flags(points_to_check.size(), 0);
-    #ifdef _OPENMP
-    #pragma omp parallel for
-    #endif
-    for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
-        double dist = signedDistanceToMeshWithKDTree(
-            points_to_check[idx], candidate_vertices, candidate_faces,
-            *cache.tree, *cache.face_centers, *cache.face_normals);
-        if (dist <= 0.1) {
-            inside_flags[idx] = 1;
-        }
+std::vector<double> MeshMatcher::computeSignedDistanceBatch(const std::vector<double>& points_flat) {
+    // 实例级串行：与 load* / matchOptimized 互斥（GIL 已在 pybind 层释放）
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    std::vector<double> distances;
+    if (points_flat.size() < 3 || points_flat.size() % 3 != 0 ||
+        candidate_vertices_.empty() || candidate_faces_.empty()) {
+        return distances;
     }
+    const size_t n_points = points_flat.size() / 3;
+    distances.assign(n_points, 0.0);
 
-    int inside_count = 0;
-    for (int flag : inside_flags) inside_count += flag;
-    int total_checked = static_cast<int>(points_to_check.size());
-    if (total_checked == 0) return 0.0;
-
-    double ratio = (inside_count == total_checked) ? 1.0
-                   : (static_cast<double>(inside_count) / total_checked);
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_IF_VERBOSE("[LOG] computeWrappingRatio: 完成，耗时: " << dt << "ms, "
-              << "包裹率: " << std::setprecision(2) << (ratio * 100) << "% ("
-              << inside_count << "/" << total_checked << ")" << std::endl);
-    return ratio;
-}
-
-double MeshMatcher::computeAverageClearance(
-    const std::vector<double>& target_vertices,
-    const std::vector<int>& target_faces,
-    const std::vector<double>& candidate_vertices,
-    const std::vector<int>& candidate_faces,
-    const KDTree* cached_tree,
-    const std::vector<Eigen::Vector3d>* cached_face_centers,
-    const std::vector<Eigen::Vector3d>* cached_face_normals) {
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    if (target_vertices.size() / 3 == 0) return 0.0;
-
-    // 采样 & KD-tree（与 computeWrappingRatio 共用辅助函数）
-    auto points_to_check = collectSamplePoints(target_vertices, 500);
-
-    KDTree local_tree;
-    std::vector<Eigen::Vector3d> local_fc, local_fn;
-    auto cache = resolveKDTreeCache(candidate_vertices, candidate_faces,
-                                    cached_tree, cached_face_centers, cached_face_normals,
-                                    local_tree, local_fc, local_fn);
-
-    // 并行计算距离并收集内部点间隙
-    std::vector<double> clearances;
-    clearances.reserve(points_to_check.size());
+    // 用 BVH：isPointInside（3 射线多数投票）+ signedDistance（BVH 最近点）
+    // 为了让 Python containment-refine 的 1000+ 次 batch 调用性能可接受，
+    // 这里对 candidate BVH 做缓存；loadCandidateMesh 时失效。
+    if (!candidate_bvh_cache_valid_ || !candidate_bvh_cache_) {
+        candidate_bvh_cache_.reset(new BVHTree());
+        candidate_bvh_cache_->build(candidate_vertices_, candidate_faces_);
+        candidate_bvh_cache_valid_ = true;
+    }
+    const BVHTree& bvh = *candidate_bvh_cache_;
 
     #ifdef _OPENMP
     #pragma omp parallel for
     #endif
-    for (int idx = 0; idx < static_cast<int>(points_to_check.size()); ++idx) {
-        double dist = signedDistanceToMeshWithKDTree(
-            points_to_check[idx], candidate_vertices, candidate_faces,
-            *cache.tree, *cache.face_centers, *cache.face_normals);
-        if (dist <= 0.1) {
-            #ifdef _OPENMP
-            #pragma omp critical
-            #endif
-            { clearances.push_back(std::abs(dist)); }
-        }
+    for (int i = 0; i < static_cast<int>(n_points); ++i) {
+        Eigen::Vector3d p(points_flat[3*i], points_flat[3*i+1], points_flat[3*i+2]);
+        distances[i] = bvh.signedDistance(p);
     }
-
-    if (clearances.empty()) return 0.0;
-
-    // 96% 分位数
-    std::sort(clearances.begin(), clearances.end());
-    size_t idx96 = static_cast<size_t>(std::ceil(clearances.size() * 0.96) - 1);
-    if (idx96 >= clearances.size()) idx96 = clearances.size() - 1;
-    double percentile96_clearance = clearances[idx96];
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_IF_VERBOSE("[LOG] computeAverageClearance: 完成，耗时: " << dt << "ms, "
-              << "内部点: " << clearances.size() << "/" << points_to_check.size()
-              << ", 96%分位数间隙: " << std::fixed << std::setprecision(4)
-              << percentile96_clearance << " mm" << std::endl);
-    return percentile96_clearance;
+    return distances;
 }
+
 
 
 /// @brief 用 Rodrigues 公式计算绕任意轴的旋转矩阵
@@ -728,27 +474,52 @@ static Eigen::Matrix3d computeRotationMatrixAroundAxis(const Eigen::Vector3d& ax
     return R;
 }
 
-/// @brief GA 个体：纵向位移 + 旋转角度 + 横向位移 → 适应度
+/// @brief 横向轴 = 纵向 × 垂直；两轴接近平行时回退（与 alignDirections 同策略）
+///
+/// 6-DOF 模式下该轴还是 pitch 的旋转轴，退化会污染全部姿态候选，必须防护。
+static Eigen::Vector3d computeLateralAxis(const Eigen::Vector3d& longitudinal,
+                                          const Eigen::Vector3d& vertical) {
+    Eigen::Vector3d lateral = longitudinal.cross(vertical);
+    if (lateral.norm() < 1e-6) {
+        lateral = (std::abs(longitudinal[0]) < 0.9)
+            ? longitudinal.cross(Eigen::Vector3d(1, 0, 0))
+            : longitudinal.cross(Eigen::Vector3d(0, 1, 0));
+    }
+    return lateral.normalized();
+}
+
+/// @brief GA 个体：完整 6-DOF SE(3) 参数化
+///
+/// 设计说明：
+///   - translation / rotation / lateral：与历史 3-DOF 等价（legacy 字段）
+///   - vertical_offset：沿垂直轴的位移，3-DOF 模式下固定 0
+///   - pitch / yaw：绕横向轴 / 垂直轴的旋转（弧度），3-DOF 模式下固定 0
+///
+/// 旋转组合顺序（右乘）：R = R_yaw(垂直轴) · R_pitch(横向轴) · R_roll(纵向轴)
+/// 这保证 roll（沿脚长方向的旋转）是最内层，与前端/业务直观一致。
 struct Individual {
-    double translation;      // 纵向位移
-    double rotation;        // 旋转角度
-    double lateral;         // 横向位移
-    double fitness;         // 适应度（包裹率，越高越好）
-    
-    Individual() : translation(0.0), rotation(0.0), lateral(0.0), fitness(0.0) {}
-    Individual(double t, double r, double l) : translation(t), rotation(r), lateral(l), fitness(0.0) {}
+    double translation;      // 纵向位移（沿 longitudinal_axis，mm）
+    double rotation;         // 绕纵向轴旋转（弧度，legacy "roll"）
+    double lateral;          // 横向位移（沿 lateral_axis，mm）
+    double vertical_offset;  // 垂直位移（沿 vertical_axis，mm，6-DOF 扩展）
+    double pitch;            // 绕横向轴旋转（弧度，6-DOF 扩展）
+    double yaw;              // 绕垂直轴旋转（弧度，6-DOF 扩展）
+    double fitness;          // 适应度（包裹率，越高越好）
+
+    Individual() : translation(0.0), rotation(0.0), lateral(0.0),
+                   vertical_offset(0.0), pitch(0.0), yaw(0.0), fitness(0.0) {}
+    Individual(double t, double r, double l)
+        : translation(t), rotation(r), lateral(l),
+          vertical_offset(0.0), pitch(0.0), yaw(0.0), fitness(0.0) {}
 };
 
-double MeshMatcher::optimizePositionAndRotationGA(
+OptimalPose MeshMatcher::optimizePositionAndRotationGA(
     const std::vector<double>& target_vertices,
     const std::vector<int>& target_faces,
     const std::vector<double>& candidate_vertices,
     const std::vector<int>& candidate_faces,
     const Eigen::Vector3d& longitudinal_axis,
     const Eigen::Vector3d& vertical_axis,
-    double& optimal_relative_rotation_angle_rad,
-    double& optimal_vertical_offset,
-    double& optimal_lateral_offset,
     const GeneticAlgorithmParams& params) {
     
     // 设置 OpenMP 默认线程数为 CPU 核心数 * 2（利用超线程）
@@ -780,10 +551,16 @@ double MeshMatcher::optimizePositionAndRotationGA(
     #endif
     
     // 计算横向轴（纵向轴 × 垂直轴）
-    Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
-    
+    Eigen::Vector3d lateral_axis = computeLateralAxis(longitudinal_axis, vertical_axis);
+
+    // 判断是否启用 6-DOF 模式（任一额外范围 > 0 即启用）
+    const bool use_6dof = (params.vertical_range > 1e-9) ||
+                         (params.pitch_range > 1e-9) ||
+                         (params.yaw_range > 1e-9);
+
     LOG_IF_VERBOSE("\n" << std::string(70, '=') << std::endl);
-    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化开始（3D优化）==========" << std::endl);
+    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化开始（"
+                   << (use_6dof ? "6-DOF SE(3)" : "3-DOF") << "）==========" << std::endl);
     LOG_IF_VERBOSE("[GA] 参数配置:" << std::endl);
     LOG_IF_VERBOSE("[GA]   种群大小: " << params.population_size << std::endl);
     LOG_IF_VERBOSE("[GA]   最大代数: " << params.max_generations << std::endl);
@@ -791,12 +568,17 @@ double MeshMatcher::optimizePositionAndRotationGA(
     LOG_IF_VERBOSE("[GA]   变异率: " << params.mutation_rate << std::endl);
     LOG_IF_VERBOSE("[GA]   选择率: " << params.selection_rate << std::endl);
     LOG_IF_VERBOSE("[GA]   采样点数: " << params.num_sample_points << std::endl);
-    LOG_IF_VERBOSE("[GA]   提前终止: " << (params.early_stopping_generations > 0 ? 
+    LOG_IF_VERBOSE("[GA]   提前终止: " << (params.early_stopping_generations > 0 ?
               std::to_string(params.early_stopping_generations) + "代无改进" : "禁用") << std::endl);
     LOG_IF_VERBOSE("[GA]   搜索范围:" << std::endl);
     LOG_IF_VERBOSE("[GA]     纵向位移: ±" << params.translation_range << "mm" << std::endl);
-    LOG_IF_VERBOSE("[GA]     旋转角度: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl);
+    LOG_IF_VERBOSE("[GA]     绕纵旋转: ±" << (params.rotation_range * 180.0 / M_PI) << "°" << std::endl);
     LOG_IF_VERBOSE("[GA]     横向位移: ±" << params.lateral_range << "mm" << std::endl);
+    if (use_6dof) {
+        LOG_IF_VERBOSE("[GA]     垂直位移: ±" << params.vertical_range << "mm (6-DOF)" << std::endl);
+        LOG_IF_VERBOSE("[GA]     Pitch  : ±" << (params.pitch_range * 180.0 / M_PI) << "° (6-DOF)" << std::endl);
+        LOG_IF_VERBOSE("[GA]     Yaw    : ±" << (params.yaw_range * 180.0 / M_PI) << "° (6-DOF)" << std::endl);
+    }
     LOG_IF_VERBOSE("[GA]   方向轴:" << std::endl);
     LOG_IF_VERBOSE("[GA]     纵向轴: (" << longitudinal_axis[0] << ", " 
               << longitudinal_axis[1] << ", " << longitudinal_axis[2] << ")" << std::endl);
@@ -815,14 +597,8 @@ double MeshMatcher::optimizePositionAndRotationGA(
     double initial_lateral = center_diff.dot(lateral_axis);
 
     // 固定采样点
-    auto fixed_sample_points = collectSamplePoints(target_vertices, params.num_sample_points);
+    auto fixed_sample_points = collectSamplePoints(target_vertices, target_faces, params.num_sample_points);
     
-    // 预先构建基础KD-tree（保留用于兼容）
-    KDTree base_tree;
-    std::vector<Eigen::Vector3d> base_face_centers;
-    std::vector<Eigen::Vector3d> base_face_normals;
-    buildFaceKDTree(candidate_vertices, candidate_faces, base_tree, 
-                   base_face_centers, base_face_normals);
     
     // ========== BVH 优化：构建 BVH 树（只构建一次）==========
     auto bvh_build_start = std::chrono::high_resolution_clock::now();
@@ -833,57 +609,88 @@ double MeshMatcher::optimizePositionAndRotationGA(
         bvh_build_end - bvh_build_start).count();
     LOG_IF_VERBOSE("[GA] BVH 构建完成，耗时: " << bvh_build_time << "ms" << std::endl);
     
-    // 适应度函数：计算包裹率（使用 BVH 加速）
+    // 适应度函数：计算包裹率（BVH 加速 + 6-DOF SE(3)）
+    //
+    // 6-DOF 姿态语义：将 candidate 网格变换为
+    //   v' = R · (v - candidate_center) + candidate_center + T
+    //   其中 R = R_yaw(vertical_axis, yaw) · R_pitch(lateral_axis, pitch) · R_roll(longitudinal_axis, rotation)
+    //         T = longitudinal*translation + lateral*lateral_offset + vertical*vertical_offset
+    // 为避免变换整张 candidate 网格，我们反向变换 target 采样点（BVH 查 candidate 是原始坐标）：
+    //   sample' = R^T · (sample - T - candidate_center) + candidate_center
+    //
+    // 3-DOF 兼容性：当 pitch=yaw=vertical_offset=0 时，R 退化为原 computeRotationMatrixAroundAxis(longitudinal, rotation)，
+    // T 退化为原 longitudinal*translation + lateral*lateral_offset；数值与历史完全一致。
     auto computeFitness = [&](const Individual& ind) -> double {
-        Eigen::Matrix3d rotation = computeRotationMatrixAroundAxis(longitudinal_axis, ind.rotation);
-        Eigen::Vector3d translation = longitudinal_axis * ind.translation 
-                                     + lateral_axis * ind.lateral;  // 纵向+横向位移
-        
-        // 计算包裹率（使用 BVH：变换采样点而不是变换整个网格）
-        // 原理：候选网格变换为 v' = R * (v - center) + center + T
-        //       逆变换采样点：sample' = R^(-1) * (sample - center - T) + center
+        Eigen::Matrix3d R_roll  = computeRotationMatrixAroundAxis(longitudinal_axis, ind.rotation);
+        Eigen::Matrix3d R_pitch = computeRotationMatrixAroundAxis(lateral_axis, ind.pitch);
+        Eigen::Matrix3d R_yaw   = computeRotationMatrixAroundAxis(vertical_axis, ind.yaw);
+        Eigen::Matrix3d rotation = R_yaw * R_pitch * R_roll;
+        Eigen::Matrix3d rotation_T = rotation.transpose();  // R 是正交阵，R^-1 = R^T（原代码 .inverse() 是 4x SIMD 浪费）
+
+        Eigen::Vector3d translation = longitudinal_axis * ind.translation
+                                     + lateral_axis * ind.lateral
+                                     + vertical_axis * ind.vertical_offset;
+
         int inside_count = 0;
         #ifdef _OPENMP
         #pragma omp parallel for reduction(+:inside_count)
         #endif
         for (int idx = 0; idx < static_cast<int>(fixed_sample_points.size()); ++idx) {
             Eigen::Vector3d sample = fixed_sample_points[idx];
-            
-            // 逆变换：将采样点从"变换后的候选网格坐标系"变换回"原始候选网格坐标系"
-            // 步骤：1. 减去平移 T
-            //       2. 减去中心点
-            //       3. 逆旋转
-            //       4. 加回中心点
-            sample -= translation;  // sample - T
-            sample -= candidate_center;  // sample - T - center
-            sample = rotation.inverse() * sample;  // R^(-1) * (sample - T - center)
-            sample += candidate_center;  // R^(-1) * (sample - T - center) + center
-            
-            // 使用 BVH 快速判断内外（O(log F) 而不是 O(F)）
+            sample -= translation;
+            sample -= candidate_center;
+            sample = rotation_T * sample;
+            sample += candidate_center;
+
             if (candidate_bvh.isPointInside(sample)) {
                 inside_count++;
             }
         }
-        
+
         return static_cast<double>(inside_count) / fixed_sample_points.size();
     };
     
-    // 随机数生成器
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // 随机数生成器：固定种子保证同输入同输出（回归可复现、winner 不随 run 漂移）。
+    // 搜索多样性由种群规模与变异保证，不依赖熵源。
+    std::mt19937 gen(20260702u);
     std::uniform_real_distribution<double> trans_dist(-params.translation_range, params.translation_range);
     std::uniform_real_distribution<double> rot_dist(-params.rotation_range, params.rotation_range);
     std::uniform_real_distribution<double> lat_dist(-params.lateral_range, params.lateral_range);
     std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
-    
-    // 1. 初始化种群（纵向位移+旋转+横向位移）
+    // 6-DOF 额外维度（若范围为 0 → 永远返回 0，天然退化为 3-DOF）
+    const double vert_r  = std::max(0.0, params.vertical_range);
+    const double pitch_r = std::max(0.0, params.pitch_range);
+    const double yaw_r   = std::max(0.0, params.yaw_range);
+    auto draw_sym = [&](double r) -> double {
+        if (r <= 0.0) return 0.0;
+        std::uniform_real_distribution<double> d(-r, r);
+        return d(gen);
+    };
+
+    // 1. 初始化种群
+    //    - 3-DOF 兼容模式：Individual(translation, rotation, lateral)，6-DOF 字段默认 0
+    //    - 6-DOF 模式：额外在 vertical / pitch / yaw 上采样
     std::vector<Individual> population(params.population_size);
     for (int i = 0; i < params.population_size; ++i) {
-        population[i] = Individual(
+        Individual ind(
             initial_translation + trans_dist(gen),
             rot_dist(gen),
             initial_lateral + lat_dist(gen)
         );
+        ind.vertical_offset = draw_sym(vert_r);
+        ind.pitch = draw_sym(pitch_r);
+        ind.yaw   = draw_sym(yaw_r);
+        population[i] = ind;
+    }
+    // 种子个体（精英保留保证 GA 结果永不差于这两个基准姿态）：
+    //   种子0（质心对齐）：质心差投影 + 零旋转 —— PCA 路径的自然起点
+    //   种子1（恒等变换）：全零 —— 外部预对齐（ICP/containment-refine）后的
+    //     当前姿态；修复"refine 已达 0.97 而 GA 随机搜索反而回退"的问题
+    if (params.population_size >= 1) {
+        population[0] = Individual(initial_translation, 0.0, initial_lateral);
+    }
+    if (params.population_size >= 2) {
+        population[1] = Individual(0.0, 0.0, 0.0);
     }
     
     // 2. 评估初始种群
@@ -966,10 +773,9 @@ double MeshMatcher::optimizePositionAndRotationGA(
             g_last_ga_generation_history = history;
         }
         
-        optimal_relative_rotation_angle_rad = best_individual.rotation;
-        optimal_vertical_offset = 0.0;  // 垂直位移固定为0（不再优化）
-        optimal_lateral_offset = best_individual.lateral;
-        return best_individual.translation;  // 返回纵向位移
+        return OptimalPose{best_individual.translation, best_individual.rotation,
+                           best_individual.lateral, best_individual.vertical_offset,
+                           best_individual.pitch, best_individual.yaw};
     }
 
     // ========= 回放：保存 generation 0（初始种群评估完成）=========
@@ -1040,26 +846,33 @@ double MeshMatcher::optimizePositionAndRotationGA(
             Individual parent1 = population[elite_dist(gen)];
             Individual parent2 = population[elite_dist(gen)];
             
-            // 交叉
+            // 交叉（均匀算术平均，同步 6 维）
             Individual child;
             if (prob_dist(gen) < params.crossover_rate) {
-                // 均匀交叉（纵向+旋转+横向）
-                child.translation = (parent1.translation + parent2.translation) / 2.0;
-                child.rotation = (parent1.rotation + parent2.rotation) / 2.0;
-                child.lateral = (parent1.lateral + parent2.lateral) / 2.0;
+                child.translation     = (parent1.translation     + parent2.translation)     / 2.0;
+                child.rotation        = (parent1.rotation        + parent2.rotation)        / 2.0;
+                child.lateral         = (parent1.lateral         + parent2.lateral)         / 2.0;
+                child.vertical_offset = (parent1.vertical_offset + parent2.vertical_offset) / 2.0;
+                child.pitch           = (parent1.pitch           + parent2.pitch)           / 2.0;
+                child.yaw             = (parent1.yaw             + parent2.yaw)             / 2.0;
                 crossover_count++;
             } else {
                 child = parent1;  // 直接复制
             }
-            
-            // 变异
+
+            // 变异：6 维同步高斯扰动（由 mutation_scale 控制）；若某维范围为 0 则不变
             if (prob_dist(gen) < params.mutation_rate) {
-                child.translation += trans_dist(gen) * params.mutation_scale;
-                child.rotation += rot_dist(gen) * params.mutation_scale;
-                child.lateral += lat_dist(gen) * params.mutation_scale;
-                
-                // 限制范围
+                child.translation     += trans_dist(gen) * params.mutation_scale;
+                child.rotation        += rot_dist(gen)   * params.mutation_scale;
+                child.lateral         += lat_dist(gen)   * params.mutation_scale;
+                child.vertical_offset += draw_sym(vert_r)  * params.mutation_scale;
+                child.pitch           += draw_sym(pitch_r) * params.mutation_scale;
+                child.yaw             += draw_sym(yaw_r)   * params.mutation_scale;
+
+                // 旋转 wrap 到 [-π, π]
                 child.rotation = std::fmod(child.rotation + M_PI, 2 * M_PI) - M_PI;
+                child.pitch    = std::fmod(child.pitch    + M_PI, 2 * M_PI) - M_PI;
+                child.yaw      = std::fmod(child.yaw      + M_PI, 2 * M_PI) - M_PI;
                 mutation_count++;
             }
             
@@ -1141,9 +954,18 @@ double MeshMatcher::optimizePositionAndRotationGA(
                   << (improved ? " ⬆️ 提升!" : "") << std::endl);
         LOG_IF_VERBOSE("[GA] │  平均适应度: " << avg_fitness << " (" << (avg_fitness * 100) << "%)" << std::endl);
         LOG_IF_VERBOSE("[GA] │  标准差: " << std::setprecision(4) << std_dev << std::endl);
-        LOG_IF_VERBOSE("[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation 
-                  << "mm, 旋转=" << (best_individual.rotation * 180.0 / M_PI) 
-                  << "°, 横向=" << best_individual.lateral << "mm" << std::endl);
+        if (use_6dof) {
+            LOG_IF_VERBOSE("[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation
+                      << "mm, roll=" << (best_individual.rotation * 180.0 / M_PI)
+                      << "°, 横向=" << best_individual.lateral << "mm"
+                      << ", 垂直=" << best_individual.vertical_offset << "mm"
+                      << ", pitch=" << (best_individual.pitch * 180.0 / M_PI) << "°"
+                      << ", yaw=" << (best_individual.yaw * 180.0 / M_PI) << "°" << std::endl);
+        } else {
+            LOG_IF_VERBOSE("[GA] │  最佳个体: 纵向=" << std::setprecision(2) << best_individual.translation
+                      << "mm, 旋转=" << (best_individual.rotation * 180.0 / M_PI)
+                      << "°, 横向=" << best_individual.lateral << "mm" << std::endl);
+        }
         LOG_IF_VERBOSE("[GA] │  操作统计: 交叉=" << crossover_count 
                   << ", 变异=" << mutation_count << std::endl);
         LOG_IF_VERBOSE("[GA] │  性能分析:" << std::endl);
@@ -1197,19 +1019,22 @@ double MeshMatcher::optimizePositionAndRotationGA(
         }
     }
     
-    optimal_relative_rotation_angle_rad = best_individual.rotation;
-    optimal_vertical_offset = 0.0;  // 垂直位移固定为0（不再优化）
-    optimal_lateral_offset = best_individual.lateral;
-    
+
     LOG_IF_VERBOSE("\n" << std::string(70, '=') << std::endl);
-    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化完成（3D优化）==========" << std::endl);
+    LOG_IF_VERBOSE("[GA] ========== 遗传算法优化完成（"
+                   << (use_6dof ? "6-DOF SE(3)" : "3-DOF") << "）==========" << std::endl);
     LOG_IF_VERBOSE("[GA] 最终结果:" << std::endl);
-    LOG_IF_VERBOSE("[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness 
+    LOG_IF_VERBOSE("[GA]   最佳适应度: " << std::fixed << std::setprecision(4) << best_fitness
               << " (包裹率: " << (best_fitness * 100) << "%)" << std::endl);
     LOG_IF_VERBOSE("[GA]   最优参数:" << std::endl);
     LOG_IF_VERBOSE("[GA]     纵向位移: " << std::setprecision(2) << best_individual.translation << " mm" << std::endl);
-    LOG_IF_VERBOSE("[GA]     旋转角度: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl);
+    LOG_IF_VERBOSE("[GA]     绕纵旋转: " << (best_individual.rotation * 180.0 / M_PI) << " °" << std::endl);
     LOG_IF_VERBOSE("[GA]     横向位移: " << best_individual.lateral << " mm" << std::endl);
+    if (use_6dof) {
+        LOG_IF_VERBOSE("[GA]     垂直位移: " << best_individual.vertical_offset << " mm" << std::endl);
+        LOG_IF_VERBOSE("[GA]     Pitch  : " << (best_individual.pitch * 180.0 / M_PI) << " °" << std::endl);
+        LOG_IF_VERBOSE("[GA]     Yaw    : " << (best_individual.yaw   * 180.0 / M_PI) << " °" << std::endl);
+    }
     LOG_IF_VERBOSE("[GA]   改进次数: " << improvement_count << " 次" << std::endl);
     LOG_IF_VERBOSE("[GA]   性能统计:" << std::endl);
     LOG_IF_VERBOSE("[GA]     适应度计算总耗时: " << total_fitness_time_ms << "ms" << std::endl);
@@ -1223,11 +1048,16 @@ double MeshMatcher::optimizePositionAndRotationGA(
     // 保存到线程本地，供 matchOptimized 填充到 MatchResult.generation_history
     g_last_ga_generation_history = std::move(history);
 
-    return best_individual.translation;
+    return OptimalPose{best_individual.translation, best_individual.rotation,
+                       best_individual.lateral, best_individual.vertical_offset,
+                       best_individual.pitch, best_individual.yaw};
 }
 
 MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
-                                       const GeneticAlgorithmParams& ga_params) {
+                                       const GeneticAlgorithmParams& ga_params,
+                                       bool skip_align_directions) {
+    // 实例级串行：GIL 已在 pybind 层释放，防止同实例并发调用竞争共享网格数据
+    std::lock_guard<std::mutex> lock(state_mutex_);
     // 注意：penetration_tolerance 参数已移除，包裹率100%即无穿模
     auto start_total = std::chrono::high_resolution_clock::now();
     MatchResult result;
@@ -1245,16 +1075,25 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     LOG_IF_VERBOSE("[LOG] Step 0: 计算体积耗时: " << dt_volume << "ms" << std::endl);
     
     // 1. 对齐方向（旋转鞋模使其与粗胚对齐）
+    //    若 skip_align_directions=true，则假设 target 已被外部预对齐（ICP 热启动），直接复用
     t0 = std::chrono::high_resolution_clock::now();
     std::vector<double> aligned_target = target_vertices_;
-    LOG_IF_VERBOSE( "[LOG] Step 1: 开始方向对齐..." << std::endl);
-    Eigen::Matrix3d rotation_matrix = alignDirections(
-        aligned_target, target_faces_,
-        candidate_vertices_, candidate_faces_
-    );
-    t1 = std::chrono::high_resolution_clock::now();
-    auto dt_align = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_IF_VERBOSE( "[LOG] Step 1: 方向对齐耗时: " << dt_align << "ms" << std::endl);
+    long long dt_align;
+    if (skip_align_directions) {
+        LOG_IF_VERBOSE( "[LOG] Step 1: 跳过方向对齐（外部已预对齐）" << std::endl);
+        t1 = std::chrono::high_resolution_clock::now();
+        dt_align = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    } else {
+        LOG_IF_VERBOSE( "[LOG] Step 1: 开始方向对齐..." << std::endl);
+        Eigen::Matrix3d rotation_matrix = alignDirections(
+            aligned_target, target_faces_,
+            candidate_vertices_, candidate_faces_
+        );
+        (void)rotation_matrix; // 当前流水线未使用，保留是为了兼容旧调用点
+        t1 = std::chrono::high_resolution_clock::now();
+        dt_align = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        LOG_IF_VERBOSE( "[LOG] Step 1: 方向对齐耗时: " << dt_align << "ms" << std::endl);
+    }
     
     // 2. 验证方向对齐（用于记录对齐信息）
     // 注意：方向已经通过 alignDirections 自动对齐，所以总是满足约束
@@ -1282,98 +1121,117 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     LOG_IF_VERBOSE( "[LOG]   垂直轴: (" << vertical_axis[0] << ", " 
               << vertical_axis[1] << ", " << vertical_axis[2] << ")" << std::endl);
     
-    // 4. 优化位置和旋转（使用遗传算法）
+    // 4. 优化位置和旋转（使用遗传算法；可能是 6-DOF 模式）
     t0 = std::chrono::high_resolution_clock::now();
-    double optimal_relative_rotation_angle_rad = 0.0;
-    double optimal_vertical_offset = 0.0;
-    double optimal_lateral_offset = 0.0;  // 横向位移
-    
-    LOG_IF_VERBOSE( "\n[LOG] Step 4: 使用遗传算法优化（纵向位移+旋转+横向位移）..." << std::endl);
-    result.optimal_translation = optimizePositionAndRotationGA(
+    LOG_IF_VERBOSE( "\n[LOG] Step 4: 使用遗传算法优化 SE(3) 刚体变换..." << std::endl);
+    const OptimalPose pose = optimizePositionAndRotationGA(
         aligned_target, target_faces_,
         candidate_vertices_, candidate_faces_,
         longitudinal_axis,
         vertical_axis,
-        optimal_relative_rotation_angle_rad,
-        optimal_vertical_offset,
-        optimal_lateral_offset,
         ga_params
     );
+    result.optimal_translation = pose.translation;
+    // 下游沿用原局部变量名（避免大范围改动）；const 防误写
+    const double optimal_relative_rotation_angle_rad = pose.rotation_rad;
+    const double optimal_vertical_offset = pose.vertical_offset;
+    const double optimal_lateral_offset  = pose.lateral;
+    const double optimal_pitch_rad = pose.pitch_rad;
+    const double optimal_yaw_rad   = pose.yaw_rad;
     // 回放：复制 GA 每代历史到结果里（供前端回放）
     result.generation_history = g_last_ga_generation_history;
-    
+
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_optimize = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     LOG_IF_VERBOSE( "[LOG] Step 4: 优化完成，耗时: " << dt_optimize << "ms" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   最优参数: 纵向位移=" << std::fixed << std::setprecision(2) 
-              << result.optimal_translation << "mm, 旋转角度=" 
-              << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°, 横向位移=" 
-              << optimal_lateral_offset << "mm" << std::endl);
-    
-    // 5. 应用最优相对平移和相对旋转
+    LOG_IF_VERBOSE( "[LOG]   最优参数: 纵向=" << std::fixed << std::setprecision(2)
+              << result.optimal_translation << "mm, roll="
+              << (optimal_relative_rotation_angle_rad * 180.0 / M_PI) << "°, 横向="
+              << optimal_lateral_offset << "mm, 垂直="
+              << optimal_vertical_offset << "mm, pitch="
+              << (optimal_pitch_rad * 180.0 / M_PI) << "°, yaw="
+              << (optimal_yaw_rad * 180.0 / M_PI) << "°" << std::endl);
+
+    // 5. 应用最优 SE(3) 变换到 candidate 网格
     t0 = std::chrono::high_resolution_clock::now();
-    LOG_IF_VERBOSE( "[LOG] Step 5: 开始应用最优相对平移和相对旋转..." << std::endl);
-    
-    // 计算旋转矩阵（用于最终变换粗胚）
-    Eigen::Matrix3d final_rotation_matrix = computeRotationMatrixAroundAxis(longitudinal_axis, optimal_relative_rotation_angle_rad);
-    
+    LOG_IF_VERBOSE( "[LOG] Step 5: 开始应用最优 SE(3) 变换..." << std::endl);
+
+    // 横向轴
+    Eigen::Vector3d lateral_axis = computeLateralAxis(longitudinal_axis, vertical_axis);
+
+    // 组合旋转矩阵：R = R_yaw · R_pitch · R_roll （与 GA computeFitness 一致）
+    Eigen::Matrix3d R_roll  = computeRotationMatrixAroundAxis(longitudinal_axis, optimal_relative_rotation_angle_rad);
+    Eigen::Matrix3d R_pitch = computeRotationMatrixAroundAxis(lateral_axis,      optimal_pitch_rad);
+    Eigen::Matrix3d R_yaw   = computeRotationMatrixAroundAxis(vertical_axis,     optimal_yaw_rad);
+    Eigen::Matrix3d final_rotation_matrix = R_yaw * R_pitch * R_roll;
+
     Eigen::Vector3d candidate_center = computeCentroid(candidate_vertices_);
     std::vector<double> optimized_candidate = candidate_vertices_;
-    // 计算横向轴
-    Eigen::Vector3d lateral_axis = longitudinal_axis.cross(vertical_axis).normalized();
-    // 应用平移：纵向+横向（垂直位移固定为0）
-    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation 
-                                  + lateral_axis * optimal_lateral_offset;
-    
+    // 应用平移：纵向+横向+垂直
+    Eigen::Vector3d translation = longitudinal_axis * result.optimal_translation
+                                  + lateral_axis    * optimal_lateral_offset
+                                  + vertical_axis   * optimal_vertical_offset;
+
     for (size_t i = 0; i < optimized_candidate.size(); i += 3) {
-        Eigen::Vector3d v(optimized_candidate[i], 
-                         optimized_candidate[i+1], 
+        Eigen::Vector3d v(optimized_candidate[i],
+                         optimized_candidate[i+1],
                          optimized_candidate[i+2]);
-        
-        // 先平移到质心，旋转，再平移回去，最后沿纵向轴平移
+
+        // 先平移到质心，旋转，再平移回去，最后平移
         v -= candidate_center;
-        v = final_rotation_matrix * v;  // 绕纵向轴旋转
+        v = final_rotation_matrix * v;
         v += candidate_center;
-        v += translation;  // 沿纵向轴平移
-        
+        v += translation;
+
         optimized_candidate[i] = v[0];
         optimized_candidate[i+1] = v[1];
         optimized_candidate[i+2] = v[2];
     }
-    
+
     result.optimal_rotation_angle_deg = optimal_relative_rotation_angle_rad * 180.0 / M_PI;
-    // 垂直位移已不再优化，固定为 0（保留字段以兼容旧前端/脚本）
-    result.optimal_vertical_offset = 0.0;
-    result.optimal_lateral_offset = optimal_lateral_offset;
-    
+    result.optimal_vertical_offset    = optimal_vertical_offset;
+    result.optimal_lateral_offset     = optimal_lateral_offset;
+    result.optimal_pitch_deg          = optimal_pitch_rad * 180.0 / M_PI;
+    result.optimal_yaw_deg            = optimal_yaw_rad   * 180.0 / M_PI;
+
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_translate = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_IF_VERBOSE( "[LOG] Step 5: 应用平移和旋转耗时: " << dt_translate << "ms" << std::endl);
+    LOG_IF_VERBOSE( "[LOG] Step 5: 应用 SE(3) 变换耗时: " << dt_translate << "ms" << std::endl);
     
     // 6. 计算体积包裹率和96%分位数间隙
     t0 = std::chrono::high_resolution_clock::now();
     LOG_IF_VERBOSE( "\n[LOG] Step 6: 开始计算最终包裹率和96%分位数间隙..." << std::endl);
     
-    // 构建KD-tree（用于包裹率和间隙计算）
-    KDTree clearance_tree;
-    std::vector<Eigen::Vector3d> clearance_face_centers;
-    std::vector<Eigen::Vector3d> clearance_face_normals;
-    buildFaceKDTree(optimized_candidate, candidate_faces_, clearance_tree, 
-                   clearance_face_centers, clearance_face_normals);
-    
-    // 计算包裹率（使用缓存的KD-tree）
-    result.wrapping_ratio = computeWrappingRatio(
-        aligned_target, target_faces_,
-        optimized_candidate, candidate_faces_,
-        &clearance_tree, &clearance_face_centers, &clearance_face_normals
-    );
-    
-    // 计算96%分位数间隙（使用缓存的KD-tree）
-    result.percentile96_clearance = computeAverageClearance(
-        aligned_target, target_faces_,
-        optimized_candidate, candidate_faces_,
-        &clearance_tree, &clearance_face_centers, &clearance_face_normals
-    );
+    BVHTree final_bvh;
+    final_bvh.build(optimized_candidate, candidate_faces_);
+
+    const size_t final_samples = std::max(ga_params.num_sample_points,
+                                          FINAL_METRIC_MIN_SAMPLES);
+    auto final_dists = computeSampleSignedDistances(
+        aligned_target, target_faces_, final_bvh, final_samples);
+    {
+        size_t inside = 0;
+        std::vector<double> clearances;
+        clearances.reserve(final_dists.size());
+        for (double di : final_dists) {
+            if (di <= ga_params.inside_tolerance_mm) {
+                ++inside;
+                clearances.push_back(std::abs(di));
+            }
+        }
+        result.wrapping_ratio = final_dists.empty() ? 0.0 :
+            static_cast<double>(inside) / final_dists.size();
+        if (!clearances.empty()) {
+            std::sort(clearances.begin(), clearances.end());
+            size_t idx96 = static_cast<size_t>(std::ceil(clearances.size() * 0.96) - 1);
+            if (idx96 >= clearances.size()) idx96 = clearances.size() - 1;
+            result.percentile96_clearance = clearances[idx96];
+        } else {
+            result.percentile96_clearance = 0.0;
+        }
+        LOG_IF_VERBOSE("[LOG]   最终指标采样数: " << final_dists.size()
+                  << " (inside_tol=" << ga_params.inside_tolerance_mm << "mm)" << std::endl);
+    }
     
     t1 = std::chrono::high_resolution_clock::now();
     auto dt_wrapping = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
@@ -1382,12 +1240,10 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
               << " (" << (result.wrapping_ratio * 100) << "%)" << std::endl);
     LOG_IF_VERBOSE( "[LOG]   96%分位数间隙: " << std::setprecision(4) << result.percentile96_clearance << " mm" << std::endl);
     
-    // 确定目标包裹率：优先使用 GA 参数中的目标包裹率，否则使用 wrapping_threshold
-    double target_wrapping = (ga_params.target_wrapping_ratio > 0.0) 
-                              ? ga_params.target_wrapping_ratio 
-                              : wrapping_threshold;
-    
-    // 检查是否达到目标包裹率
+    // 目标包裹率（用于决定 is_fully_wrapped）：以 wrapping_threshold 为权威
+    //   ga_params.target_wrapping_ratio 仅用于 GA 早停，不再参与最终判定
+    //   （历史上两者曾被 OR 串联导致 UX 混乱：CLI --wrapping-threshold 被 GA 默认 0.96 覆盖）
+    double target_wrapping = wrapping_threshold;
     result.is_fully_wrapped = (result.wrapping_ratio >= target_wrapping);
     
     if (!result.is_fully_wrapped) {
@@ -1428,8 +1284,11 @@ MatchResult MeshMatcher::matchOptimized(double wrapping_threshold,
     LOG_IF_VERBOSE( "[LOG] 匹配分数: " << std::setprecision(4) << result.match_score << std::endl);
     LOG_IF_VERBOSE( "[LOG] 最优参数:" << std::endl);
     LOG_IF_VERBOSE( "[LOG]   纵向位移: " << std::setprecision(2) << result.optimal_translation << " mm" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   旋转角度: " << result.optimal_rotation_angle_deg << " °" << std::endl);
-    LOG_IF_VERBOSE( "[LOG]   横向位移: " << optimal_lateral_offset << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   绕纵旋转: " << result.optimal_rotation_angle_deg << " °" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   横向位移: " << result.optimal_lateral_offset << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   垂直位移: " << result.optimal_vertical_offset << " mm" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   Pitch    : " << result.optimal_pitch_deg << " °" << std::endl);
+    LOG_IF_VERBOSE( "[LOG]   Yaw      : " << result.optimal_yaw_deg << " °" << std::endl);
     LOG_IF_VERBOSE( "[LOG] ========== 性能分析 ==========" << std::endl);
     LOG_IF_VERBOSE( "[LOG] 各步骤耗时及占比:" << std::endl);
     if (total_time > 0) {

@@ -77,6 +77,15 @@ def _load_stl(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     except Exception:
         pass
 
+    # 若 winding 不一致（典型于三方导出或自相交 STL），调用 trimesh.repair.fix_normals
+    # 统一三角形定向。对 BVH 3 射线多数投票仍有帮助（减少"半翻转"区域的误判）。
+    if not mesh.is_winding_consistent:
+        try:
+            import trimesh.repair as _repair
+            _repair.fix_normals(mesh)
+        except Exception:
+            pass
+
     if not mesh.is_watertight:
         warnings.warn(
             f"STL 网格非水密（non-watertight）: {path}，"

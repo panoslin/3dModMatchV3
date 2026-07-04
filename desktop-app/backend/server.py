@@ -1864,6 +1864,7 @@ def execute_match(task_data):
                 ga_params.lateral_range = params.get('lateral_range', 30.0)
                 ga_params.num_sample_points = params.get('sample_points', 500)
                 ga_params.target_wrapping_ratio = params.get('wrapping_threshold', 0.96)
+                ga_params.inside_tolerance_mm = float(params.get('inside_tolerance_mm', 0.1))
             except Exception as e:
                 print(f"[WARN]  创建GA参数失败: {e}")
                 ga_params = None
@@ -1890,13 +1891,15 @@ def execute_match(task_data):
             blank_name = blank_db_name or Path(blank_path).stem
 
             try:
-                # 执行匹配
+                # 执行匹配（统一算法：ICP 多起点 + containment-refine 默认开启）
                 best_match, match_info = find_optimal_match(
                     shoe_path,
                     [Path(blank_path)],
                     wrapping_threshold=wrapping_threshold,
                     verbose=False,
-                    ga_params=ga_params
+                    ga_params=ga_params,
+                    icp_warmstart=True,
+                    containment_refine_enabled=True,
                 )
                 matched = best_match is not None
                 record_id = None

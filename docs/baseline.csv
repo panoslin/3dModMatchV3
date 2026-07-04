@@ -1,0 +1,45 @@
+testcase,target,pipeline,best_match,best_wrap_ratio,volume_mm3,note
+tc1,B004加大.3dm,baseline,B004加大.3dm,0.9820,1544742.29,pre-P2a
+tc1,B004大.3dm,baseline,B004大.3dm,0.9680,1338989.35,pre-P2a
+tc1,B004小.3dm,baseline,B004小.3dm,0.9660,1174865.64,pre-P2a
+tc2,B003大.3dm,baseline,B002小.3dm,0.9620,1135370.32,pre-P2a
+tc3,002大(1).3dm,baseline,002小(1).3dm,0.9700,1066581.30,pre-P2a
+tc3,002小(1).3dm,baseline,002小(1).3dm,0.9840,1066581.30,pre-P2a
+tc3,004大.3dm,baseline,004大.3dm,0.9840,1324850.30,pre-P2a
+tc3,004小.3dm,baseline,004小.3dm,0.9840,1131482.06,pre-P2a
+tc3,113小(1).3dm,baseline,113小(1).3dm,0.9720,1370157.54,pre-P2a
+tc4,002大.stl,baseline,002小.stl,0.9780,1066616.74,pre-P2a
+tc5,002小.stl,baseline,(FAIL),0.8260,,pre-P2a; 15候选全<0.96
+tc1,B004加大.3dm,unified-default,B004加大.3dm,0.9760,1544742.29,no CLI flag; ICP+refine default-on
+tc1,B004大.3dm,unified-default,B004大.3dm,0.9700,1338989.35,no CLI flag
+tc1,B004小.3dm,unified-default,B004小.3dm,0.9720,1174865.64,no CLI flag
+tc2,B003大.3dm,unified-default,B002小.3dm,0.9640,1135370.32,no CLI flag
+tc3,002大(1).3dm,unified-default,002小(1).3dm,0.9760,1066581.30,no CLI flag
+tc3,002小(1).3dm,unified-default,002小(1).3dm,0.9660,1066581.30,no CLI flag
+tc3,004大.3dm,unified-default,004大.3dm,0.9780,1324850.30,no CLI flag; PCA path was flipping; refine restored
+tc3,004小.3dm,unified-default,004小.3dm,0.9720,1131482.06,no CLI flag
+tc3,113小(1).3dm,unified-default,113小(1).3dm,0.9720,1370157.54,no CLI flag; PCA path was flipping; refine restored
+tc4,002大.stl,unified-default,002小.stl,0.9700,1066616.74,no CLI flag
+tc5,002小.stl,unified-default,002小.stl,0.9620,1066616.74,no CLI flag; identity strict ≥0.96 hard threshold passed
+tc1,B004加大.3dm,improved,B004加大.3dm,0.9745,1544742.29,2026-07-03; 指标=2000采样BVH精确距离; 全流程确定性(复跑逐字一致)
+tc1,B004大.3dm,improved,B004大.3dm,0.9710,1338989.35,2026-07-03
+tc1,B004小.3dm,improved,B004小.3dm,0.9945,1174865.64,2026-07-03
+tc2,B003大.3dm,improved,B002小.3dm,0.9780,1135370.32,2026-07-03; winner 与基线一致且不再随 run 漂移
+tc3,002大(1).3dm,improved,002小(1).3dm,0.9850,1066581.30,2026-07-03
+tc3,002小(1).3dm,improved,002小(1).3dm,0.9830,1066581.30,2026-07-03
+tc3,004大.3dm,improved,004大.3dm,0.9815,1324850.30,2026-07-03
+tc3,004小.3dm,improved,004小.3dm,0.9955,1131482.06,2026-07-03
+tc3,113小(1).3dm,improved,113小(1).3dm,0.9650,1370157.54,2026-07-03
+tc4,002大.stl,improved,002小.stl,0.9825,1066616.74,2026-07-03
+tc5,002小.stl,improved,002大.stl,0.9920,1278403.22,2026-07-03; winner 变更: identity 002小 在严格 τ=0.1mm/2000采样下诚实上限≈95% (见 failure_analysis §12.3); 002大 为过阈值候选中体积最小
+tc1,B004加大.3dm,improved-r4,B004加大.3dm,0.9906,1544742.29,2026-07-03 R4; 面积均匀采样5000+计数抛光; 确定性
+tc1,B004大.3dm,improved-r4,B004大.3dm,0.9940,1338989.35,2026-07-03 R4
+tc1,B004小.3dm,improved-r4,B004小.3dm,0.9766,1174865.64,2026-07-03 R4
+tc2,B003大.3dm,improved-r4,B002小.3dm,0.9894,1135370.32,2026-07-03 R4
+tc3,002大(1).3dm,improved-r4,002小(1).3dm,0.9810,1066581.30,2026-07-03 R4
+tc3,002小(1).3dm,improved-r4,002小(1).3dm,0.9942,1066581.30,2026-07-03 R4
+tc3,004大.3dm,improved-r4,004小.3dm,0.9744,1131482.06,2026-07-03 R4; winner 变更(原004大): 边缘带配对被计数抛光抬过线 95.30→97.44
+tc3,004小.3dm,improved-r4,002小(1).3dm,0.9730,1066581.30,2026-07-03 R4; winner 变更(原004小): 93.45→97.30 同机制
+tc3,113小(1).3dm,improved-r4,113小(1).3dm,0.9644,1370157.54,2026-07-03 R4
+tc4,002大.stl,improved-r4,002小.stl,0.9808,1066616.74,2026-07-03 R4
+tc5,002小.stl,improved-r4,002小.stl,0.9640,1066616.74,2026-07-03 R4; ✅ identity 回归 Best Match(用户业务确认的正确配对); refine95.25→polish96.33→GA→final96.40

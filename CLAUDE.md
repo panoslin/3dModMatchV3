@@ -123,27 +123,34 @@ Defined in `src/biz/matcher.py` and mapped to C++ `GeneticAlgorithmParams`:
 | Parameter | Default | Description |
 |---|---|---|
 | `--verbose` | off | Enable detailed logging |
-| `--wrapping-threshold` | 0.99 | Minimum wrapping ratio to accept a match |
+| `--wrapping-threshold` | 0.96 | Minimum wrapping ratio to accept a match (final pass/fail authority) |
+| `--inside-tolerance-mm` | 0.1 | Signed distance ≤ this counts as "inside" for wrap/clearance |
+| `--icp-warmstart` / `--no-icp-warmstart` | on | PCA-seeded 16-start ICP path, competes with PCA path (higher wrap wins) |
+| `--containment-refine` / `--no-containment-refine` | on | scipy L-BFGS-B + multi-scale Nelder-Mead refine after ICP (adaptive budget) |
 | `--ga-population-size` | 50 | GA population size |
 | `--ga-max-generations` | 30 | GA max generations |
-| `--ga-target-wrapping-ratio` | 0.96 | Stop early when this wrapping ratio is reached |
+| `--ga-target-wrapping-ratio` | 0.96 | GA early-stop only (does NOT affect final pass/fail) |
 | `--ga-crossover-rate` | 0.8 | Crossover probability |
 | `--ga-mutation-rate` | 0.1 | Mutation probability |
+| `--ga-mutation-scale` | 0.1 | Mutation perturbation scale |
+| `--ga-selection-rate` | 0.5 | Elite retention fraction |
 | `--ga-translation-range` | 50.0 mm | Longitudinal displacement search range |
-| `--ga-rotation-range` | 180.0° | Rotation search range |
+| `--ga-rotation-range` | 180.0° | Roll (around longitudinal axis) search range |
 | `--ga-lateral-range` | 30.0 mm | Lateral displacement search range |
-| `--num-sample-points` | 500 | Sample points for wrapping ratio calculation |
+| `--ga-vertical-range` / `--ga-pitch-range` / `--ga-yaw-range` | 0 | 6-DOF extension; any >0 enables 6-DOF mode |
+| `--ga-6dof` | off | Shortcut: vertical=10mm, pitch=yaw=5° |
+| `--num-sample-points` | 500 | GA fitness sample count (promising candidates auto-bump to 2000); final wrap/clearance metrics use max(this, 5000) |
 
 ## Algorithm Summary
 
-1. Load 3DM files (rhino3dm) → extract meshes
-2. PCA to compute longitudinal/vertical axes for both target and candidate
-3. Validate axis alignment (≤0.1° tolerance)
-4. Genetic algorithm simultaneously optimizes: longitudinal translation (±50mm), rotation around longitudinal axis (±180°), lateral offset (±30mm)
-5. Compute wrapping ratio (volume-based containment) and 96th-percentile surface clearance
-6. Return minimum-volume valid match
+1. Load mesh files (`load_mesh.py`: .3dm via rhino3dm, .stl via trimesh with normal/winding repair)
+2. Path A (PCA): compute longitudinal (PCA 1st component) / vertical (principal normal or global Z) axes, auto-rotate target into candidate frame (angles are recorded but not validated — alignment is automatic, not checked against a tolerance)
+3. Path B (default-on, skipped if Path A wrap ≥0.97): 16-seed PCA-initialized ICP warm-start → containment-refine (scipy, penalizes only outside points, adaptive restart budget) → count-polish (soft-count Nelder-Mead in 6-DOF for borderline candidates, refine wrap 0.90–0.97: the quadratic hinge optimum ≠ count optimum) → GA with `skip_align_directions=True` and small 6-DOF polish windows
+4. Genetic algorithm (deterministic seed; population seeded with centroid-aligned + identity individuals so a pre-aligned pose can never regress) optimizes longitudinal translation, roll, lateral offset (+ optional vertical/pitch/yaw in 6-DOF mode); fitness = BVH containment ratio of area-uniform surface samples
+5. Final metrics on the GA-optimized pose: wrapping ratio and 96th-percentile clearance from one batch of ≥5000 area-uniform BVH signed distances (exact point-triangle distance + 3-orthogonal-ray parity voting with shared-edge t-deduplication); area-uniform sampling replaces vertex-stride sampling so unevenly tessellated meshes (e.g. dense scans) are not over-weighted
+6. A candidate passes if wrap ≥ `--wrapping-threshold`; among passing candidates the minimum-volume one wins
 
-Spatial acceleration: BVH (`src/core/bvh.cpp`) + KD-tree (`src/core/kdtree.h`). Parallelism via OpenMP.
+Spatial acceleration: BVH (`src/core/bvh.cpp`) for all containment/distance queries. Parallelism via OpenMP; pybind releases the GIL during matching so concurrent Python threads stay responsive.
 
 ## Output Formats
 

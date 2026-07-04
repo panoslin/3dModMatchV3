@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
+#include <cstring>
 #include "matcher.h"
 
 namespace py = pybind11;
@@ -32,9 +33,13 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("num_sample_points", &GeneticAlgorithmParams::num_sample_points)
         .def_readwrite("early_stopping_generations", &GeneticAlgorithmParams::early_stopping_generations)
         .def_readwrite("target_wrapping_ratio", &GeneticAlgorithmParams::target_wrapping_ratio)
+        .def_readwrite("inside_tolerance_mm", &GeneticAlgorithmParams::inside_tolerance_mm)
         .def_readwrite("translation_range", &GeneticAlgorithmParams::translation_range)
         .def_readwrite("rotation_range", &GeneticAlgorithmParams::rotation_range)
-        .def_readwrite("lateral_range", &GeneticAlgorithmParams::lateral_range);
+        .def_readwrite("lateral_range", &GeneticAlgorithmParams::lateral_range)
+        .def_readwrite("vertical_range", &GeneticAlgorithmParams::vertical_range)
+        .def_readwrite("pitch_range", &GeneticAlgorithmParams::pitch_range)
+        .def_readwrite("yaw_range", &GeneticAlgorithmParams::yaw_range);
 
     py::class_<GenerationState>(m, "GenerationState")
         .def(py::init<>())
@@ -62,6 +67,8 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def_readwrite("optimal_rotation_angle_deg", &MatchResult::optimal_rotation_angle_deg)
         .def_readwrite("optimal_vertical_offset", &MatchResult::optimal_vertical_offset)
         .def_readwrite("optimal_lateral_offset", &MatchResult::optimal_lateral_offset)
+        .def_readwrite("optimal_pitch_deg", &MatchResult::optimal_pitch_deg)
+        .def_readwrite("optimal_yaw_deg", &MatchResult::optimal_yaw_deg)
         .def_readwrite("meets_direction_constraints", &MatchResult::meets_direction_constraints)
         .def_readwrite("generation_history", &MatchResult::generation_history)
         .def("__repr__", [](const MatchResult& r) {
@@ -117,25 +124,59 @@ PYBIND11_MODULE(mesh_matcher, m) {
         .def("set_verbose", &MeshMatcher::setVerbose,
              py::arg("verbose"),
              "Set whether to output verbose logging")
+        .def("signed_distance_batch", [](MeshMatcher& matcher, py::array_t<double> points) {
+            py::buffer_info buf = points.request();
+            if (buf.ndim != 2 || buf.shape[1] != 3) {
+                throw std::runtime_error("points must be Nx3 array");
+            }
+            const size_t n = static_cast<size_t>(buf.shape[0]);
+            std::vector<double> pts(static_cast<double*>(buf.ptr),
+                                    static_cast<double*>(buf.ptr) + n * 3);
+            std::vector<double> d;
+            {
+                // BVH 构建 + 批量距离计算期间释放 GIL：
+                // containment-refine 的上千次 batch 调用不再冻结其他 Python 线程
+                py::gil_scoped_release release;
+                d = matcher.computeSignedDistanceBatch(pts);
+            }
+
+            // Return as numpy array
+            py::array_t<double> result(static_cast<py::ssize_t>(d.size()));
+            py::buffer_info rbuf = result.request();
+            std::memcpy(rbuf.ptr, d.data(), d.size() * sizeof(double));
+            return result;
+        },
+             py::arg("points"),
+             "Batch signed distance: for each Nx3 point, return d where d<0=inside, d>0=outside candidate mesh.")
         .def("match_optimized", [](MeshMatcher& matcher,
                                    double wrapping_threshold,
-                                   py::object ga_params_obj) {
+                                   py::object ga_params_obj,
+                                   bool skip_align_directions) {
             GeneticAlgorithmParams ga_params;
             if (!ga_params_obj.is_none()) {
                 try {
                     ga_params = ga_params_obj.cast<GeneticAlgorithmParams>();
                 } catch (...) {
+                    // 故意静默：类型不匹配时回退到默认 GA 参数（历史行为）
                 }
             }
 
+            // ga_params 已在持有 GIL 时取完；整个 C++ 匹配流水线（对齐→GA→
+            // 最终指标）不触碰任何 Python 对象 → 释放 GIL，桌面端并发匹配任务
+            // 与 Flask 请求处理不再被单个匹配冻结。返回值转换发生在本作用域
+            // 结束（GIL 自动恢复）之后，安全。
+            py::gil_scoped_release release;
             return matcher.matchOptimized(
                 wrapping_threshold,
-                ga_params
+                ga_params,
+                skip_align_directions
             );
         },
              py::arg("wrapping_threshold") = 1.0,
              py::arg("ga_params") = py::none(),
-             "Perform optimized matching with automatic direction alignment and genetic algorithm optimization")
+             py::arg("skip_align_directions") = false,
+             "Perform optimized matching with automatic direction alignment and genetic algorithm optimization. "
+             "Pass skip_align_directions=True if the target has been pre-aligned externally (e.g. ICP warm-start).")
         .def_static("compute_volume", [](py::array_t<double> vertices,
                                          py::array_t<int> faces) {
             py::buffer_info vbuf = vertices.request();
