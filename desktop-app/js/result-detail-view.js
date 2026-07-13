@@ -314,6 +314,9 @@ class ResultDetailView {
       console.log(`[3D perf] loadMatchResult: ${(tLoad - tViewer1).toFixed(1)}ms`);
       console.log(`[3D perf] total (excl outsidePoints): ${(tLoad - t0).toFixed(1)}ms`);
 
+      // 手动位姿试探：方向键移动鞋模，后端实时回评包裹率（验证最优性）
+      this._viewer.enableManualProbe(recordId);
+
       // 绑定轴和外点显示控制
       this._bindViewerControls();
     } catch (error) {

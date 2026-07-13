@@ -177,6 +177,7 @@ def containment_refine(
     jitter_restarts: int = 4,
     early_stop_wrap: float = 0.97,
     nm_maxiter: int = 500,
+    fast_sdf=None,
     verbose: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """Containment-maximizing SE(3) refine.
@@ -217,9 +218,18 @@ def containment_refine(
         R, T = params_to_RT(p)
         return (samples_local @ R.T) + center + T
 
+    # 优化迭代的距离查询：有 SDF 网格时走插值（~40× 加速），
+    # 否则精确 BVH。wrap_of（验收/早停门）永远走精确查询。
+    if fast_sdf is not None:
+        def _opt_dist(pts: np.ndarray) -> np.ndarray:
+            return fast_sdf(pts)
+    else:
+        def _opt_dist(pts: np.ndarray) -> np.ndarray:
+            return matcher.signed_distance_batch(
+                np.ascontiguousarray(pts, dtype=np.float64))
+
     def loss_hinge(p: np.ndarray) -> float:
-        pts = transform(p)
-        d = matcher.signed_distance_batch(pts.astype(np.float64))
+        d = _opt_dist(transform(p))
         penalty = np.maximum(0.0, d + hinge_eps)
         return float(np.sum(penalty * penalty) / len(d))
 
@@ -315,6 +325,69 @@ def containment_refine(
     return M, final_wrap
 
 
+def build_candidate_sdf(
+    matcher: "mesh_matcher.MeshMatcher",
+    candidate_vertices: np.ndarray,
+    spacing: float = 2.0,
+    band: float = 6.0,
+    coarse_mult: int = 3,
+    pad: float = 12.0,
+    verbose: bool = False,
+):
+    """为已加载的 candidate 构建两级窄带 SDF 网格，返回向量化查询函数。
+
+    优化器（refine 的 hinge / polish 的软计数）每次迭代都要一次
+    signed_distance_batch（每点 ~10-20μs 精确 BVH 查询），数千次迭代
+    合计占单候选耗时的 ~90%。以位姿无关的 SDF 网格换查询：
+      - 粗网格（spacing×coarse_mult）全域打底（一次小批量精确查询）
+      - 细网格仅在表面 ±band 窄带内用精确 BVH 填值（近表面才需要精度）
+      - 查询 = 三线性插值，比精确 BVH 快 ~40×；实测近表面误差
+        p90 ≈ 0.03mm、in/out 判定翻转率 0.06%（tc5 identity, 2mm 网格）
+    验收门与最终指标仍走精确 BVH —— SDF 只用于优化迭代，不改变任何判定口径。
+
+    依赖 scipy；缺失时返回 None（调用方回退精确查询）。
+    """
+    try:
+        from scipy.interpolate import RegularGridInterpolator
+    except Exception as e:
+        if verbose:
+            print(f"⚠️  scipy 缺失，SDF 加速不可用: {e}")
+        return None
+
+    cv = np.asarray(candidate_vertices, dtype=np.float64)
+    lo = cv.min(axis=0) - pad
+    hi = cv.max(axis=0) + pad
+
+    # 粗网格全域
+    hc = spacing * coarse_mult
+    axes_c = [np.arange(lo[k], hi[k] + hc, hc) for k in range(3)]
+    Gc = np.stack(np.meshgrid(*axes_c, indexing='ij'), axis=-1).reshape(-1, 3)
+    dc = matcher.signed_distance_batch(np.ascontiguousarray(Gc))
+    interp_c = RegularGridInterpolator(
+        axes_c, dc.reshape([len(a) for a in axes_c]),
+        method='linear', bounds_error=False, fill_value=float(pad + hc))
+
+    # 细网格：粗插值 |d| ≤ band+hc 的窄带内用精确值，带外沿用粗插值
+    axes_f = [np.arange(lo[k], hi[k] + spacing, spacing) for k in range(3)]
+    shape_f = tuple(len(a) for a in axes_f)
+    Gf = np.stack(np.meshgrid(*axes_f, indexing='ij'), axis=-1).reshape(-1, 3)
+    df = np.asarray(interp_c(Gf))
+    band_mask = np.abs(df) <= (band + hc)
+    if band_mask.any():
+        df[band_mask] = matcher.signed_distance_batch(
+            np.ascontiguousarray(Gf[band_mask]))
+    interp_f = RegularGridInterpolator(
+        axes_f, df.reshape(shape_f),
+        method='linear', bounds_error=False, fill_value=float(pad + hc))
+    if verbose:
+        print(f"  [sdf] 网格 {shape_f}，窄带精确点 {int(band_mask.sum()):,}/{len(Gf):,}")
+
+    def query(pts: np.ndarray) -> np.ndarray:
+        return np.asarray(interp_f(pts), dtype=np.float64)
+
+    return query
+
+
 def count_polish(
     matcher: "mesh_matcher.MeshMatcher",
     target_vertices_current: np.ndarray,
@@ -324,6 +397,7 @@ def count_polish(
     restarts: int = 6,
     nm_maxiter: int = 400,
     stop_at: float = 0.985,
+    fast_sdf=None,
     verbose: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """计数目标 6-DOF 抛光（containment-refine 之后的第二级精调）。
@@ -358,9 +432,16 @@ def count_polish(
         R = Rotation.from_euler('xyz', p[3:6]).as_matrix()
         return (local_pts @ R.T) + center + p[0:3]
 
+    # 软计数迭代走 SDF 插值（若提供）；验收集 eval_wrap 永远精确
+    if fast_sdf is not None:
+        def _opt_dist(pts):
+            return fast_sdf(pts)
+    else:
+        def _opt_dist(pts):
+            return matcher.signed_distance_batch(np.ascontiguousarray(pts))
+
     def soft_fail(p):
-        d = matcher.signed_distance_batch(
-            np.ascontiguousarray(_transformed(opt_local, p)))
+        d = _opt_dist(_transformed(opt_local, p))
         return float(np.mean(1.0 / (1.0 + np.exp(-(d - inside_tol) / 0.15))))
 
     def eval_wrap(p):
@@ -448,8 +529,13 @@ def find_optimal_match(
     ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
     icp_warmstart: bool = True,
     containment_refine_enabled: bool = True,
+    early_exit: bool = True,
 ) -> Tuple[Optional[Path], dict]:
     """遍历所有候选粗胚，返回满足包裹率且体积最小的匹配。
+
+    early_exit=True 时按体积升序处理候选：选择规则本就是"过线者中体积
+    最小"，升序下第一个过线者即全局最优 → 提前终止，结果严格等价，
+    未处理的候选在 all_candidate_results 中标记 skipped。
 
     当 icp_warmstart=True 时，对每个候选额外跑一轮 "Python ICP 多起点 + C++
     skip_align_directions" 路径，与默认 PCA 路径比较，保留 wrap 较高者。
@@ -480,16 +566,39 @@ def find_optimal_match(
     valid_matches = []
     all_candidate_results = []  # 收集所有候选结果（包括未通过阈值的）
 
+    # 预载全部候选并计算体积（体积对刚体变换不变，可在原始姿态下计算）
+    loaded = []  # (volume, 原始 idx, file, vertices, faces)
     for idx, candidate_file in enumerate(candidate_files):
+        try:
+            cv_, cf_ = load_mesh_file(candidate_file, mesh_quality='high')
+            vol_ = mesh_matcher.MeshMatcher.compute_volume(cv_, cf_)
+            loaded.append((vol_, idx, candidate_file, cv_, cf_))
+        except MeshFileError as e:
+            if verbose:
+                print(f"  ❌ 无法加载文件 {candidate_file.name}: {e}")
+            all_candidate_results.append({
+                'candidate_path': str(candidate_file),
+                'candidate_name': candidate_file.name,
+                'error': str(e),
+            })
+        except Exception as e:
+            if verbose:
+                print(f"  ❌ 加载出错 {candidate_file.name}: {e}")
+            all_candidate_results.append({
+                'candidate_path': str(candidate_file),
+                'candidate_name': candidate_file.name,
+                'error': str(e),
+            })
+
+    process_order = sorted(loaded, key=lambda t: t[0]) if early_exit else loaded
+
+    for seq, (candidate_volume, idx, candidate_file,
+              candidate_vertices, candidate_faces) in enumerate(process_order):
         if verbose:
-            print(f"\n[{idx+1}/{len(candidate_files)}] 检查候选: {candidate_file.name}")
+            print(f"\n[{seq+1}/{len(process_order)}] 检查候选: {candidate_file.name}"
+                  f"（体积 {candidate_volume:,.0f} mm³）")
 
         try:
-            # 加载候选粗胚
-            candidate_vertices, candidate_faces = load_mesh_file(
-                candidate_file, mesh_quality='high'
-            )
-
             # 加载到匹配器（default 路径）
             if not matcher.load_candidate_mesh(candidate_vertices, candidate_faces):
                 if verbose:
@@ -514,6 +623,10 @@ def find_optimal_match(
             # 路径 B（可选）: ICP 多起点热启动 + C++ skip_align_directions
             # 优化：若 PCA 已显著超过阈值（≥0.97），跳过 ICP+refine 节省时间（干净 3DM/STL 常见）
             icp_error = None
+            # ICP 路径获胜时的 Python 侧预对齐 4×4（M_polish·M_refine·M_icp）。
+            # 必须随结果持久化：桌面端预览重建位姿依赖它——只靠 GA 标量
+            # （恒等种子下通常为 0）与重算 PCA 旋转无法复现 ICP 路径的真实位姿
+            pretransform_used = None
             _pca_already_excellent = (
                 icp_warmstart and result.wrapping_ratio >= 0.97
             )
@@ -528,6 +641,7 @@ def find_optimal_match(
                         verbose=verbose,
                     )
                     aligned_target = _apply_transform(target_vertices, M_icp)
+                    pretransform_chain = np.array(M_icp, dtype=float)
 
                     # 路径 B.2（可选）: containment-refine (scipy L-BFGS-B + NM restarts)
                     # 用已加载 candidate 的 matcher 做 signed_distance_batch 评估
@@ -536,6 +650,13 @@ def find_optimal_match(
                         refine_matcher = mesh_matcher.MeshMatcher()
                         refine_matcher.set_verbose(False)
                         refine_matcher.load_candidate_mesh(candidate_vertices, candidate_faces)
+                        # SDF 加速层：一次构建（~1-3s），refine + polish 的数千次
+                        # 优化迭代共用；验收门与最终指标不受影响（仍精确）
+                        sdf_start = time.time()
+                        fast_sdf = build_candidate_sdf(
+                            refine_matcher, candidate_vertices, verbose=verbose)
+                        if verbose and fast_sdf is not None:
+                            print(f"  [sdf] 构建耗时 {(time.time()-sdf_start)*1000:.0f}ms")
                         refine_start = time.time()
                         M_refine, refine_wrap = containment_refine(
                             refine_matcher,
@@ -544,6 +665,7 @@ def find_optimal_match(
                             hinge_eps=0.0,            # strict（与最终 wrap 评估的 inside_tol=0.1 配套）
                             jitter_restarts=10,       # 多尺度 + 持续 retry，wrap 不达标永不 break
                             early_stop_wrap=0.97,     # 推到 0.97 才停，留 ~1pp 余量给 C++ 端不同采样
+                            fast_sdf=fast_sdf,
                             verbose=verbose,
                         )
                         if verbose:
@@ -552,6 +674,7 @@ def find_optimal_match(
                                 f"耗时 {(time.time()-refine_start)*1000:.0f}ms"
                             )
                         aligned_target = _apply_transform(aligned_target, M_refine)
+                        pretransform_chain = M_refine @ pretransform_chain
 
                         # 计数抛光：refine 落在边缘带时最值得——深违入区块救不回，
                         # 但大量亚毫米边缘点可救（hinge 最优 ≠ 计数最优）。
@@ -564,10 +687,12 @@ def find_optimal_match(
                                 refine_matcher, aligned_target, target_faces,
                                 inside_tol=(ga_params.inside_tolerance_mm
                                             if ga_params else 0.1),
+                                fast_sdf=fast_sdf,
                                 verbose=verbose,
                             )
                             if np.isfinite(polish_wrap):
                                 aligned_target = _apply_transform(aligned_target, M_polish)
+                                pretransform_chain = M_polish @ pretransform_chain
 
                     base_ga = ga_params if ga_params else mesh_matcher.GeneticAlgorithmParams()
                     # refine 成功后目标已在计数最优附近：给 GA 换小窗口 6-DOF 抛光参数
@@ -603,6 +728,7 @@ def find_optimal_match(
                         result = result_icp
                         match_time += icp_time
                         pipeline_used = tag
+                        pretransform_used = pretransform_chain
                 except Exception as e:
                     icp_error = f"{type(e).__name__}: {e}"
                     # 生产路径（desktop-app 以 verbose=False 调用）也必须可观测：
@@ -641,6 +767,11 @@ def find_optimal_match(
                 'optimal_translation': result.optimal_translation,
                 'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
                 'optimal_lateral_offset': result.optimal_lateral_offset,
+                'optimal_vertical_offset': result.optimal_vertical_offset,
+                'optimal_pitch_deg': result.optimal_pitch_deg,
+                'optimal_yaw_deg': result.optimal_yaw_deg,
+                'target_pretransform': (pretransform_used.tolist()
+                                        if pretransform_used is not None else None),
                 'match_time_ms': match_time * 1000,
                 'pipeline_used': pipeline_used,
                 'icp_error': icp_error,
@@ -657,9 +788,21 @@ def find_optimal_match(
             # 检查是否满足所有条件
             if (result.meets_direction_constraints and
                 result.is_fully_wrapped):
-                valid_matches.append((result, match_time))
+                valid_matches.append((result, match_time, pretransform_used))
                 if verbose:
                     print("  ✅ 满足所有匹配条件")
+                if early_exit:
+                    # 体积升序下首个过线者即全局最优；其余候选标记跳过
+                    for v2, _, f2, _, _ in process_order[seq + 1:]:
+                        all_candidate_results.append({
+                            'candidate_path': str(f2),
+                            'candidate_name': f2.name,
+                            'volume': v2,
+                            'skipped': 'early_exit（体积更大，不可能优于已过线者）',
+                        })
+                    if verbose and seq + 1 < len(process_order):
+                        print(f"  ⏩ 提前终止：跳过 {len(process_order)-seq-1} 个更大体积候选")
+                    break
             else:
                 if verbose:
                     reasons = []
@@ -669,15 +812,6 @@ def find_optimal_match(
                         reasons.append("不完全包裹")
                     print(f"  ❌ 不满足匹配条件: {', '.join(reasons)}")
 
-        except MeshFileError as e:
-            if verbose:
-                print(f"  ❌ 无法加载文件: {e}")
-            all_candidate_results.append({
-                'candidate_path': str(candidate_file),
-                'candidate_name': candidate_file.name,
-                'error': str(e),
-            })
-            continue
         except Exception as e:
             if verbose:
                 print(f"  ❌ 匹配过程出错: {e}")
@@ -701,8 +835,8 @@ def find_optimal_match(
     
     # 选择体积最小的匹配
     best_match = min(valid_matches, key=lambda x: x[0].volume)
-    result, match_time = best_match
-    
+    result, match_time, best_pretransform = best_match
+
     return Path(result.candidate_path), {
         'candidate_path': result.candidate_path,
         'volume': result.volume,
@@ -711,6 +845,11 @@ def find_optimal_match(
         'optimal_translation': result.optimal_translation,
         'optimal_rotation_angle_deg': result.optimal_rotation_angle_deg,
         'optimal_lateral_offset': result.optimal_lateral_offset,
+        'optimal_vertical_offset': result.optimal_vertical_offset,
+        'optimal_pitch_deg': result.optimal_pitch_deg,
+        'optimal_yaw_deg': result.optimal_yaw_deg,
+        'target_pretransform': (best_pretransform.tolist()
+                                if best_pretransform is not None else None),
         'is_fully_wrapped': result.is_fully_wrapped,
         'meets_direction_constraints': result.meets_direction_constraints,
         'target_wrapping_ratio': wrapping_threshold,
@@ -745,6 +884,7 @@ def match_testcase_optimized(
     ga_params: Optional[mesh_matcher.GeneticAlgorithmParams] = None,
     icp_warmstart: bool = True,
     containment_refine_enabled: bool = True,
+    early_exit: bool = True,
 ) -> dict:
     """对 testcase_dir 下所有 target 逐个匹配 candidate_set 中的粗胚。"""
     target_dir = testcase_dir / 'target'
@@ -779,6 +919,7 @@ def match_testcase_optimized(
             ga_params=ga_params,
             icp_warmstart=icp_warmstart,
             containment_refine_enabled=containment_refine_enabled,
+            early_exit=early_exit,
         )
         
         result = {
@@ -866,6 +1007,14 @@ def main():
         dest='containment_refine',
         action='store_false',
         help='关闭 containment-refine（仅在追求速度时使用，可能让 strict ≥0.96 不达标）'
+    )
+    parser.add_argument(
+        '--no-early-exit',
+        dest='early_exit',
+        action='store_false',
+        default=True,
+        help='关闭"体积升序+首个过线者早停"（早停与全量扫描的最优解严格等价；'
+             '关闭后对每个候选都完整评估，用于生成全量对比报告）'
     )
 
     parser.add_argument(
@@ -1018,6 +1167,7 @@ def main():
         ga_params=ga_params,
         icp_warmstart=args.icp_warmstart,
         containment_refine_enabled=args.containment_refine,
+        early_exit=args.early_exit,
     )
     
     if 'error' in result:

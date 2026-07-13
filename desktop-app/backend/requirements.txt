@@ -4,3 +4,6 @@ numpy>=1.20.0
 rhino3dm>=8.0
 psutil>=5.9.0
 trimesh>=4.0
+# ICP 热启动(trimesh.registration)/containment-refine/count-polish/SDF 加速层的
+# 必要依赖；缺失时 matcher.py 会静默降级为纯 PCA 路径，匹配质量显著下降
+scipy>=1.10

@@ -126,7 +126,8 @@ Defined in `src/biz/matcher.py` and mapped to C++ `GeneticAlgorithmParams`:
 | `--wrapping-threshold` | 0.96 | Minimum wrapping ratio to accept a match (final pass/fail authority) |
 | `--inside-tolerance-mm` | 0.1 | Signed distance ≤ this counts as "inside" for wrap/clearance |
 | `--icp-warmstart` / `--no-icp-warmstart` | on | PCA-seeded 16-start ICP path, competes with PCA path (higher wrap wins) |
-| `--containment-refine` / `--no-containment-refine` | on | scipy L-BFGS-B + multi-scale Nelder-Mead refine after ICP (adaptive budget) |
+| `--containment-refine` / `--no-containment-refine` | on | scipy L-BFGS-B + multi-scale Nelder-Mead refine after ICP (adaptive budget, SDF-grid accelerated) |
+| `--no-early-exit` | off | Disable ascending-volume early exit (early exit is exactly equivalent to full scan for the winner; disable only for full comparison reports) |
 | `--ga-population-size` | 50 | GA population size |
 | `--ga-max-generations` | 30 | GA max generations |
 | `--ga-target-wrapping-ratio` | 0.96 | GA early-stop only (does NOT affect final pass/fail) |

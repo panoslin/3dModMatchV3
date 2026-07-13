@@ -27,6 +27,19 @@ class Viewer3D {
     this.replayTimer = null;
     this.replayIsPlaying = false;
 
+    // 手动位姿试探（方向键移动/旋转鞋模 + 后端实时回评包裹率）
+    this.manualOffset = { dl: 0, dlat: 0, dv: 0 };
+    this.manualRotation = { rl: 0, rlat: 0, rv: 0 };  // 度：绕 L(滚转)/Lat(俯仰)/V(偏航)
+    this.moveStep = 0.5;                 // mm（平移）与 °（旋转）共用，-/= 键循环调节
+    this._probePivot = null;             // 旋转枢轴（后端返回，保证所见即所测）
+    this._probeRecordId = null;
+    this._probeTimer = null;
+    this._probeBusy = false;
+    this._baseFinalMatrix = null;        // 算法输出位姿（手动偏移的基准）
+    this._probeHud = null;
+    this._probeKeyHandler = null;
+    this._lastProbe = null;
+
     this.init();
   }
 
@@ -172,6 +185,7 @@ class Viewer3D {
 
   _clearMatchObjects() {
     this.stopReplay();
+    this.disableManualProbe();
 
     if (this._outsidePointsPending) {
       cancelAnimationFrame(this._outsidePointsPending);
@@ -415,12 +429,24 @@ class Viewer3D {
     if (btn) btn.textContent = '播放';
   }
 
-  _buildRelativeMatrix(pivot, axisLong, lateralAxis, translationMm, rotationDeg, lateralMm) {
+  // 6-DOF 相对位姿矩阵：R = R_yaw(垂直轴)·R_pitch(横向轴)·R_roll(纵向轴)，
+  // 绕 pivot（候选质心）旋转后平移——与后端 C++ matchOptimized Step 5 一致。
+  // GA 回放历史只记录 3-DOF（vertical/pitch/yaw 传 0 时严格退化为旧行为）。
+  _buildRelativeMatrix(pivot, axisLong, lateralAxis, translationMm, rotationDeg, lateralMm,
+                       verticalAxis = null, verticalMm = 0, pitchDeg = 0, yawDeg = 0) {
     const angleRad = rotationDeg * Math.PI / 180.0;
     const tVec = axisLong.clone().multiplyScalar(translationMm)
       .add(lateralAxis.clone().multiplyScalar(lateralMm));
+    if (verticalAxis && verticalMm) {
+      tVec.add(verticalAxis.clone().multiplyScalar(verticalMm));
+    }
     const T1 = new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z);
-    const R = new THREE.Matrix4().makeRotationAxis(axisLong, angleRad);
+    let R = new THREE.Matrix4().makeRotationAxis(axisLong, angleRad);
+    if (verticalAxis && (pitchDeg || yawDeg)) {
+      const Rp = new THREE.Matrix4().makeRotationAxis(lateralAxis, pitchDeg * Math.PI / 180.0);
+      const Ry = new THREE.Matrix4().makeRotationAxis(verticalAxis, yawDeg * Math.PI / 180.0);
+      R = new THREE.Matrix4().multiplyMatrices(Ry, Rp).multiply(R);
+    }
     const T2 = new THREE.Matrix4().makeTranslation(
       pivot.x + tVec.x, pivot.y + tVec.y, pivot.z + tVec.z
     );
@@ -453,6 +479,7 @@ class Viewer3D {
     this.targetMesh.matrixAutoUpdate = false;
     this.targetMesh.matrix.copy(Minv);
     this.targetMesh.updateMatrixWorld(true);
+    this._setManualBase(Minv);
 
     // 更新 UI
     const setText = (id, v) => {
@@ -486,16 +513,24 @@ class Viewer3D {
         ...data.axes.candidate_original.lateral_axis
       ).normalize();
       const mr = data.match_result || {};
+      const verticalAxis = new THREE.Vector3(
+        ...data.axes.candidate_original.vertical_axis
+      ).normalize();
       const M = this._buildRelativeMatrix(
         pivot, axisLong, lateralAxis,
         Number(mr.optimal_translation || 0),
         Number(mr.optimal_rotation_angle_deg || 0),
-        Number(mr.optimal_lateral_offset || 0)
+        Number(mr.optimal_lateral_offset || 0),
+        verticalAxis,
+        Number(mr.optimal_vertical_offset || 0),
+        Number(mr.optimal_pitch_deg || 0),
+        Number(mr.optimal_yaw_deg || 0)
       );
       const Minv = new THREE.Matrix4().copy(M).invert();
       this.targetMesh.matrixAutoUpdate = false;
       this.targetMesh.matrix.copy(Minv);
       this.targetMesh.updateMatrixWorld(true);
+      this._setManualBase(Minv);
       return;
     }
 
@@ -727,6 +762,287 @@ class Viewer3D {
     const showOutside = document.getElementById('showOutsidePoints');
     this.outsidePointsGroup.visible = showOutside ? showOutside.checked : true;
     this.scene.add(this.outsidePointsGroup);
+  }
+
+  // ─── 手动位姿试探（方向键移动鞋模，后端实时回评包裹率） ───
+  //
+  // ← / → 沿纵向轴，↑ / ↓ 沿垂直轴，[ / ]（或 Shift+↑↓）沿横向轴；
+  // - / = 调步长；R 复位到算法位姿。每次移动后防抖请求
+  // /api/match/result/<id>/probe，用后端精确 BVH 口径重算包裹率与外点云。
+
+  enableManualProbe(recordId) {
+    this._probeRecordId = recordId;
+    this.manualOffset = { dl: 0, dlat: 0, dv: 0 };
+    this.manualRotation = { rl: 0, rlat: 0, rv: 0 };
+    this._probePivot = null;
+    this._ensureProbeHud();
+    if (!this._probeKeyHandler) {
+      this._probeKeyHandler = (e) => this._onProbeKey(e);
+      window.addEventListener('keydown', this._probeKeyHandler);
+    }
+    this._scheduleProbe(80);   // 初始请求：以后端口径重绘外点云 + 基线包裹率
+  }
+
+  disableManualProbe() {
+    if (this._probeKeyHandler) {
+      window.removeEventListener('keydown', this._probeKeyHandler);
+      this._probeKeyHandler = null;
+    }
+    if (this._probeTimer) {
+      clearTimeout(this._probeTimer);
+      this._probeTimer = null;
+    }
+    if (this._probeHud && this._probeHud.parentNode) {
+      this._probeHud.parentNode.removeChild(this._probeHud);
+    }
+    this._probeHud = null;
+    this._probeRecordId = null;
+    this._baseFinalMatrix = null;
+    this._lastProbe = null;
+    this._probePivot = null;
+  }
+
+  _setManualBase(matrix) {
+    this._baseFinalMatrix = matrix.clone();
+    this.manualOffset = { dl: 0, dlat: 0, dv: 0 };
+    this.manualRotation = { rl: 0, rlat: 0, rv: 0 };
+    this._updateProbeHud();
+    if (this._probeRecordId) this._scheduleProbe(300);
+  }
+
+  _onProbeKey(e) {
+    if (!this._probeRecordId || !this.targetMesh || !this._baseFinalMatrix) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+
+    const s = this.moveStep;
+    // Shift + 移动键 = 绕对应轴旋转（度）；旋转需要后端返回的枢轴（首个 probe 响应）
+    const rotReady = !!this._probePivot;
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowRight':
+        if (e.shiftKey) { if (rotReady) this.manualRotation.rv += s; }
+        else this.manualOffset.dl += s;
+        break;
+      case 'ArrowLeft':
+        if (e.shiftKey) { if (rotReady) this.manualRotation.rv -= s; }
+        else this.manualOffset.dl -= s;
+        break;
+      case 'ArrowUp':
+        if (e.shiftKey) { if (rotReady) this.manualRotation.rlat += s; }
+        else this.manualOffset.dv += s;
+        break;
+      case 'ArrowDown':
+        if (e.shiftKey) { if (rotReady) this.manualRotation.rlat -= s; }
+        else this.manualOffset.dv -= s;
+        break;
+      case ']': this.manualOffset.dlat += s; break;
+      case '[': this.manualOffset.dlat -= s; break;
+      case '}': if (rotReady) this.manualRotation.rl += s; break;   // Shift+]
+      case '{': if (rotReady) this.manualRotation.rl -= s; break;   // Shift+[
+      case '-': case '_': {
+        const steps = [0.1, 0.5, 1, 2];
+        const i = steps.indexOf(this.moveStep);
+        this.moveStep = steps[Math.max(0, i - 1)];
+        break;
+      }
+      case '=': case '+': {
+        const steps = [0.1, 0.5, 1, 2];
+        const i = steps.indexOf(this.moveStep);
+        this.moveStep = steps[Math.min(steps.length - 1, i + 1)];
+        break;
+      }
+      case 'r': case 'R':
+        this.manualOffset = { dl: 0, dlat: 0, dv: 0 };
+        this.manualRotation = { rl: 0, rlat: 0, rv: 0 };
+        break;
+      default:
+        handled = false;
+    }
+    if (!handled) return;
+    e.preventDefault();
+    this._applyManualOffset();
+  }
+
+  _manualAxes() {
+    const ax = this.replayDataCache && this.replayDataCache.axes
+      ? this.replayDataCache.axes.candidate_original : null;
+    if (!ax) return null;
+    return {
+      L: new THREE.Vector3(...ax.longitudinal_axis).normalize(),
+      Lat: new THREE.Vector3(...ax.lateral_axis).normalize(),
+      V: new THREE.Vector3(...ax.vertical_axis).normalize(),
+    };
+  }
+
+  _applyManualOffset() {
+    const axes = this._manualAxes();
+    if (!axes || !this.targetMesh || !this._baseFinalMatrix) return;
+    // 与后端限制一致（±200mm / ±45°），避免 400
+    const cl = (v, m) => Math.max(-m, Math.min(m, v));
+    this.manualOffset.dl = cl(this.manualOffset.dl, 200);
+    this.manualOffset.dlat = cl(this.manualOffset.dlat, 200);
+    this.manualOffset.dv = cl(this.manualOffset.dv, 200);
+    this.manualRotation.rl = cl(this.manualRotation.rl, 45);
+    this.manualRotation.rlat = cl(this.manualRotation.rlat, 45);
+    this.manualRotation.rv = cl(this.manualRotation.rv, 45);
+    const { dl, dlat, dv } = this.manualOffset;
+    const { rl, rlat, rv } = this.manualRotation;
+    const off = new THREE.Vector3()
+      .addScaledVector(axes.L, dl)
+      .addScaledVector(axes.Lat, dlat)
+      .addScaledVector(axes.V, dv);
+    const M = new THREE.Matrix4().makeTranslation(off.x, off.y, off.z);
+    if ((rl || rlat || rv) && this._probePivot) {
+      // 与后端同一约定：R = R_yaw(V)·R_pitch(Lat)·R_roll(L)，绕鞋模质心（渲染帧）
+      const d2r = Math.PI / 180;
+      const R = new THREE.Matrix4().makeRotationAxis(axes.V, rv * d2r)
+        .multiply(new THREE.Matrix4().makeRotationAxis(axes.Lat, rlat * d2r))
+        .multiply(new THREE.Matrix4().makeRotationAxis(axes.L, rl * d2r));
+      const P = this._probePivot;
+      M.multiply(new THREE.Matrix4().makeTranslation(P.x, P.y, P.z))
+        .multiply(R)
+        .multiply(new THREE.Matrix4().makeTranslation(-P.x, -P.y, -P.z));
+    }
+    M.multiply(this._baseFinalMatrix);
+    this.targetMesh.matrixAutoUpdate = false;
+    this.targetMesh.matrix.copy(M);
+    this.targetMesh.updateMatrixWorld(true);
+    this._updateProbeHud();
+    this._scheduleProbe(280);
+  }
+
+  _scheduleProbe(delayMs) {
+    if (!this._probeRecordId) return;
+    if (this._probeTimer) clearTimeout(this._probeTimer);
+    this._probeTimer = setTimeout(() => this._runProbe(), delayMs);
+  }
+
+  async _runProbe() {
+    if (!this._probeRecordId || this._probeBusy) {
+      // 忙碌时顺延，保证最后一次按键的状态最终会被评估
+      if (this._probeBusy) this._scheduleProbe(200);
+      return;
+    }
+    this._probeBusy = true;
+    const { dl, dlat, dv } = this.manualOffset;
+    const { rl, rlat, rv } = this.manualRotation;
+    try {
+      const base = (typeof API_BASE_URL !== 'undefined')
+        ? API_BASE_URL : 'http://127.0.0.1:5000/api';
+      const resp = await fetch(
+        `${base}/match/result/${this._probeRecordId}/probe`
+        + `?dl=${dl}&dlat=${dlat}&dv=${dv}&rl=${rl}&rlat=${rlat}&rv=${rv}`);
+      if (!resp.ok) throw new Error(`probe ${resp.status}`);
+      const data = await resp.json();
+      // 记录旋转枢轴（首个响应即到位；此后 Shift 旋转键生效）
+      if (data.pivot && !this._probePivot) {
+        this._probePivot = new THREE.Vector3(data.pivot[0], data.pivot[1], data.pivot[2]);
+      }
+      // 丢弃过期响应（期间用户又按了键）
+      const cur = this.manualOffset;
+      const curR = this.manualRotation;
+      const rot = data.rotations || { rl: 0, rlat: 0, rv: 0 };
+      if (data.offsets.dl === cur.dl && data.offsets.dlat === cur.dlat && data.offsets.dv === cur.dv
+          && rot.rl === curR.rl && rot.rlat === curR.rlat && rot.rv === curR.rv) {
+        this._lastProbe = data;
+        this._renderProbeOutsidePoints(data);
+        this._updateProbeHud();
+      } else {
+        this._scheduleProbe(120);
+      }
+    } catch (err) {
+      console.warn('[probe] 请求失败:', err);
+    } finally {
+      this._probeBusy = false;
+    }
+  }
+
+  _renderProbeOutsidePoints(data) {
+    // 后端口径外点云替换旧的前端单射线检测（有 probe 时禁用后者）
+    if (this._outsidePointsPending) {
+      cancelAnimationFrame(this._outsidePointsPending);
+      this._outsidePointsPending = null;
+    }
+    this._clearOutsidePoints();
+    const pts = data.outside_points || [];
+    if (pts.length === 0) return;
+
+    const pos = new Float32Array(pts.length * 3);
+    const col = new Float32Array(pts.length * 3);
+    const c1 = [1.0, 0.63, 0.25], c2 = [1.0, 0.19, 0.19], c3 = [0.48, 0.0, 0.0], c4 = [1.0, 0.0, 1.0];
+    for (let i = 0; i < pts.length; i++) {
+      pos[i * 3] = pts[i][0]; pos[i * 3 + 1] = pts[i][1]; pos[i * 3 + 2] = pts[i][2];
+      const depth = pts[i][3];
+      const c = depth <= 1 ? c1 : depth <= 3 ? c2 : depth <= 6 ? c3 : c4;
+      col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    let maxDim = 100;
+    if (this.candidateMesh) {
+      this.candidateMesh.geometry.computeBoundingBox();
+      const bb = this.candidateMesh.geometry.boundingBox;
+      maxDim = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z);
+    }
+    const mat = new THREE.PointsMaterial({
+      size: Math.max(maxDim * 0.008, 0.5),
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.95,
+    });
+    this.outsidePointsGroup = new THREE.Points(geom, mat);
+    const showOutside = document.getElementById('showOutsidePoints');
+    this.outsidePointsGroup.visible = showOutside ? showOutside.checked : true;
+    this.scene.add(this.outsidePointsGroup);
+  }
+
+  _ensureProbeHud() {
+    if (this._probeHud || !this.container) return;
+    const hud = document.createElement('div');
+    hud.style.cssText = [
+      'position:absolute', 'top:10px', 'left:10px', 'z-index:20',
+      'background:rgba(20,24,34,0.82)', 'color:#e8ecf4',
+      'font:12px/1.7 "SF Mono",Menlo,monospace',
+      'padding:8px 12px', 'border-radius:6px', 'pointer-events:none',
+      'white-space:pre', 'border:1px solid rgba(255,255,255,0.12)',
+    ].join(';');
+    if (getComputedStyle(this.container).position === 'static') {
+      this.container.style.position = 'relative';
+    }
+    this.container.appendChild(hud);
+    this._probeHud = hud;
+    this._updateProbeHud();
+  }
+
+  _updateProbeHud() {
+    if (!this._probeHud) return;
+    const { dl, dlat, dv } = this.manualOffset;
+    const { rl, rlat, rv } = this.manualRotation;
+    const moved = dl !== 0 || dlat !== 0 || dv !== 0 || rl !== 0 || rlat !== 0 || rv !== 0;
+    const p = this._lastProbe;
+    let wrapLine = '包裹率: 计算中…';
+    if (p) {
+      const w = (p.wrap * 100).toFixed(2);
+      const b = (p.baseline_wrap * 100).toFixed(2);
+      const delta = (p.wrap - p.baseline_wrap) * 100;
+      const sign = delta > 0.005 ? '▲' : delta < -0.005 ? '▼' : '·';
+      const color = delta > 0.005 ? '#4cc17a' : delta < -0.005 ? '#e06552' : '#e8ecf4';
+      // stored = 匹配时存档的最终指标（5000 面积采样）；试探口径同为面积采样
+      //（8000 点、不同随机抽样），基线与存档间 ±0.3pp 内属采样噪声
+      const stored = (p.stored_wrap != null) ? ` · 存档 ${(p.stored_wrap * 100).toFixed(2)}%` : '';
+      const mode = (p.sampling === 'vertex') ? ' ⚠顶点口径' : '';
+      wrapLine = `包裹率: <b style="color:${color}">${w}%</b> ${sign} `
+        + `(基线 ${b}%${stored})${mode}  外点 ${p.outside_count}/${p.sample_count}`;
+    }
+    this._probeHud.innerHTML =
+      `<b>${moved ? '⚠ 手动试探位姿' : '算法输出位姿'}</b>  步长 ${this.moveStep}mm/${this.moveStep}°\n`
+      + `ΔL ${dl.toFixed(1)}  ΔLat ${dlat.toFixed(1)}  ΔV ${dv.toFixed(1)} (mm)`
+      + `   旋转 滚${rl.toFixed(1)} 俯${rlat.toFixed(1)} 偏${rv.toFixed(1)} (°)\n`
+      + wrapLine + '\n'
+      + '<span style="opacity:.65">←→纵向  ↑↓垂直  [ ]横向  ⇧←→偏航  ⇧↑↓俯仰  ⇧[ ]滚转  -/=步长  R复位</span>';
   }
 
   // ─── 通用方法 ───

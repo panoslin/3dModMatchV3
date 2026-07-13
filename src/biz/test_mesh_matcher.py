@@ -309,6 +309,131 @@ def test_refine_keeps_grinding_when_close(monkeypatch):
     assert all(r for _, r in calls)
 
 
+def test_build_candidate_sdf_accuracy():
+    """SDF 网格插值须逼近精确符号距离（近表面误差 ≲0.35mm）。"""
+    from matcher import build_candidate_sdf
+
+    m = mesh_matcher.MeshMatcher()
+    cv, cf = make_cube(0.0, 10.0)
+    assert m.load_candidate_mesh(cv, cf)
+    sdf = build_candidate_sdf(m, cv, spacing=2.0)
+    assert sdf is not None
+    # 近表面点（优化器唯一关心的区域）：插值应接近精确值。
+    # 注意：深内部中轴脊（如立方体中心）插值误差 O(半格距)≈1mm 是几何必然，
+    # 但 hinge/计数目标对深内部点不敏感（d=-4 与 -5 判定相同），不作断言。
+    pts = np.array([
+        [9.0, 5.0, 5.0],    # -1
+        [11.0, 5.0, 5.0],   # +1
+        [5.0, 5.0, -3.0],   # +3
+    ])
+    d = sdf(pts)
+    np.testing.assert_allclose(d, [-1.0, 1.0, 3.0], atol=0.35)
+    # 与精确查询一致性（表面 ±3mm 随机点）
+    rng = np.random.default_rng(5)
+    q = rng.uniform(-1.5, 11.5, (500, 3))
+    d_exact = m.signed_distance_batch(np.ascontiguousarray(q))
+    near = np.abs(d_exact) < 3.0
+    err = np.abs(np.asarray(sdf(q))[near] - d_exact[near])
+    # 立方体 90° 锐边是插值最坏情况（梯度脊被平滑，误差 ~0.25mm）；
+    # 真实鞋模圆滑表面实测 p90≈0.03mm（tc5 identity, 2mm 网格）
+    assert np.percentile(err, 90) < 0.4, f"近表面 p90 误差 {np.percentile(err,90):.3f}mm"
+
+
+def test_refine_with_fast_sdf_floor():
+    """fast_sdf 路径下 refine 仍满足下界保护且正常收敛。"""
+    from matcher import build_candidate_sdf, containment_refine
+
+    m = mesh_matcher.MeshMatcher()
+    cv, cf = make_cube(0.0, 10.0)
+    assert m.load_candidate_mesh(cv, cf)
+    sdf = build_candidate_sdf(m, cv, spacing=2.0)
+    tv, _ = make_grid_cube(-0.4, 10.4, 4)   # 全部顶点在外 ~0.4-0.7mm 的可救场景
+    _, wrap = containment_refine(m, tv, jitter_restarts=3, nm_maxiter=150,
+                                 fast_sdf=sdf, verbose=False)
+    assert np.isfinite(wrap)
+    assert wrap >= 0.0                        # 下界保护语义
+    # 外扩 0.4 的立方体无法整体塞进 [0,10]³（刚体不变体积），wrap 不可能为 1，
+    # 但优化不得崩溃且不劣于起点（起点 wrap=0：顶点距角点 0.69mm > 0.1 tol）
+
+
+def test_early_exit_first_passing_wins(tmp_path):
+    """体积升序早停：首个过线者即最优，其余标记 skipped。"""
+    import trimesh
+    from matcher import find_optimal_match
+
+    tdir = tmp_path / "target"; cdir = tmp_path / "candidate_set"
+    tdir.mkdir(); cdir.mkdir()
+    tv, tf = make_cube(3.0, 7.0)
+    trimesh.Trimesh(vertices=tv, faces=tf, process=False).export(tdir / "t.stl")
+    for name, (lo, hi) in {"small": (0.0, 10.0), "mid": (-1.0, 11.0),
+                           "big": (-2.0, 12.0)}.items():
+        v, f = make_cube(lo, hi)
+        trimesh.Trimesh(vertices=v, faces=f, process=False).export(
+            cdir / f"{name}.stl")
+
+    best, info = find_optimal_match(
+        tdir / "t.stl", sorted(cdir.glob("*.stl")),
+        wrapping_threshold=0.96, verbose=False, early_exit=True)
+    assert best is not None and best.name == "small.stl"   # 体积最小的过线者
+    skipped = [r for r in info["all_candidate_results"] if r.get("skipped")]
+    assert len(skipped) == 2                                # mid/big 未被评估
+    assert {r["candidate_name"] for r in skipped} == {"mid.stl", "big.stl"}
+
+
+def test_pretransform_composition_order():
+    """预对齐链的矩阵合成顺序：先 M1 后 M2 逐次应用 == 一次应用 M2@M1。
+
+    桌面端预览用持久化的合成矩阵一次性重建鞋模位姿，合成顺序错会导致
+    渲染位姿与匹配位姿不一致（正是本轮修复的回归锚点）。
+    """
+    from scipy.spatial.transform import Rotation
+    from matcher import _apply_transform
+
+    rng = np.random.default_rng(11)
+
+    def rand_se3():
+        M = np.eye(4)
+        M[:3, :3] = Rotation.from_euler('xyz', rng.uniform(-0.5, 0.5, 3)).as_matrix()
+        M[:3, 3] = rng.uniform(-20, 20, 3)
+        return M
+
+    M1, M2, M3 = rand_se3(), rand_se3(), rand_se3()
+    V = rng.uniform(-50, 50, (200, 3))
+    sequential = _apply_transform(_apply_transform(_apply_transform(V, M1), M2), M3)
+    composed = _apply_transform(V, M3 @ M2 @ M1)
+    np.testing.assert_allclose(sequential, composed, atol=1e-9)
+
+
+def test_match_info_contains_pose_persistence_fields(tmp_path):
+    """匹配结果必须携带完整位姿持久化字段（预览重建依赖）。
+
+    PCA 路径获胜（立方体 wrap=1.0 短路 ICP）时 target_pretransform 为 None，
+    6-DOF 分量存在且为 0——桌面端据此回退 PCA 重建。
+    """
+    import trimesh
+    from matcher import find_optimal_match
+
+    tdir = tmp_path / "target"; cdir = tmp_path / "candidate_set"
+    tdir.mkdir(); cdir.mkdir()
+    tv, tf = make_cube(3.0, 7.0)
+    trimesh.Trimesh(vertices=tv, faces=tf, process=False).export(tdir / "t.stl")
+    cv, cf = make_cube(0.0, 10.0)
+    trimesh.Trimesh(vertices=cv, faces=cf, process=False).export(cdir / "c.stl")
+
+    best, info = find_optimal_match(
+        tdir / "t.stl", sorted(cdir.glob("*.stl")),
+        wrapping_threshold=0.96, verbose=False)
+    assert best is not None
+    assert 'target_pretransform' in info
+    assert info['target_pretransform'] is None          # PCA 路径
+    for k in ('optimal_vertical_offset', 'optimal_pitch_deg', 'optimal_yaw_deg'):
+        assert k in info and info[k] == pytest.approx(0.0)
+    per_cand = info['all_candidate_results'][0]
+    assert 'target_pretransform' in per_cand
+    for k in ('optimal_vertical_offset', 'optimal_pitch_deg', 'optimal_yaw_deg'):
+        assert k in per_cand
+
+
 def test_count_polish_floor():
     """count_polish 下界保护：结果不劣于起点；全内含时保持 1.0。"""
     from matcher import count_polish

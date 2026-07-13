@@ -5,6 +5,7 @@
 提供RESTful API接口
 """
 
+import math
 import os
 import sys
 
@@ -1116,6 +1117,11 @@ def _compute_preview_data(record_id: int) -> bytes:
     optimal_translation = record_dict.get('optimal_translation', 0.0)
     optimal_rotation_angle_deg = record_dict.get('optimal_rotation_angle_deg', 0.0)
     optimal_lateral_offset = record_dict.get('optimal_lateral_offset', 0.0)
+    # 6-DOF 分量与 ICP 预对齐矩阵存于 result_data JSON（旧记录可能没有）
+    optimal_vertical_offset = float(result_data.get('optimal_vertical_offset', 0.0) or 0.0)
+    optimal_pitch_deg = float(result_data.get('optimal_pitch_deg', 0.0) or 0.0)
+    optimal_yaw_deg = float(result_data.get('optimal_yaw_deg', 0.0) or 0.0)
+    target_pretransform = result_data.get('target_pretransform')
     wrapping_threshold = result_data.get('target_wrapping_ratio', 0.96)
     conn.close()
 
@@ -1123,12 +1129,6 @@ def _compute_preview_data(record_id: int) -> bytes:
     candidate_vertices, candidate_faces = load_mesh_file(str(blank_path), mesh_quality='high')
 
     _normalize = _tf_normalize  # alias for local readability
-
-    rotation_matrix_align = compute_alignment_rotation(
-        target_vertices, target_faces,
-        candidate_vertices, candidate_faces,
-        mesh_matcher,
-    )
 
     # Still need individual axes for downstream transformation
     candidate_longitudinal_axis = _normalize(np.array(
@@ -1140,8 +1140,26 @@ def _compute_preview_data(record_id: int) -> bytes:
             candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()),
         dtype=float))
 
+    # 鞋模对齐位姿重建：
+    #   新记录（ICP/refine/polish 路径获胜）：直接应用匹配时持久化的
+    #     Python 侧预对齐 4×4（M_polish·M_refine·M_icp）——这是真实位姿。
+    #   旧记录或 PCA 路径：回退到重算 PCA 对齐旋转（与 C++ alignDirections 一致）。
+    #   此前预览一律用 PCA 重算，对 ICP 获胜的记录位姿完全错误
+    #  （表现为"包裹率 96% 但渲染图鞋模伸出粗胚、洋红外点铺屏"）。
     target_center = np.mean(target_vertices, axis=0)
-    target_vertices_aligned = (rotation_matrix_align @ (target_vertices - target_center).T).T + target_center
+    if target_pretransform:
+        M_pre = np.asarray(target_pretransform, dtype=float).reshape(4, 4)
+        target_vertices_aligned = target_vertices @ M_pre[:3, :3].T + M_pre[:3, 3]
+    else:
+        rotation_matrix_align = compute_alignment_rotation(
+            target_vertices, target_faces,
+            candidate_vertices, candidate_faces,
+            mesh_matcher,
+        )
+        target_vertices_aligned = (
+            (rotation_matrix_align @ (target_vertices - target_center).T).T
+            + target_center
+        )
 
     longitudinal_axis = candidate_longitudinal_axis.copy()
     candidate_center = np.mean(candidate_vertices, axis=0)
@@ -1159,9 +1177,15 @@ def _compute_preview_data(record_id: int) -> bytes:
     target_lateral_axis = _normalize(np.cross(target_longitudinal_axis_aligned, target_vertical_axis_aligned))
     candidate_lateral_axis = _normalize(np.cross(longitudinal_axis, candidate_vertical_axis))
 
-    angle_rad = math.radians(optimal_rotation_angle_deg)
-    R_rotate = rodrigues_rotation(longitudinal_axis, angle_rad)
-    translation_vec = longitudinal_axis * optimal_translation + candidate_lateral_axis * optimal_lateral_offset
+    # 候选（粗胚）GA 位姿重建：完整 6-DOF，与 C++ matchOptimized Step 5 一致
+    #   R = R_yaw(垂直轴) · R_pitch(横向轴) · R_roll(纵向轴)，绕候选质心旋转后平移
+    R_roll = rodrigues_rotation(longitudinal_axis, math.radians(optimal_rotation_angle_deg))
+    R_pitch = rodrigues_rotation(candidate_lateral_axis, math.radians(optimal_pitch_deg))
+    R_yaw = rodrigues_rotation(candidate_vertical_axis, math.radians(optimal_yaw_deg))
+    R_rotate = R_yaw @ R_pitch @ R_roll
+    translation_vec = (longitudinal_axis * optimal_translation
+                       + candidate_lateral_axis * optimal_lateral_offset
+                       + candidate_vertical_axis * optimal_vertical_offset)
 
     candidate_vertices_transformed = (
         (R_rotate @ (candidate_vertices - candidate_center).T).T
@@ -1184,6 +1208,9 @@ def _compute_preview_data(record_id: int) -> bytes:
             'optimal_translation': optimal_translation,
             'optimal_rotation_angle_deg': optimal_rotation_angle_deg,
             'optimal_lateral_offset': optimal_lateral_offset,
+            'optimal_vertical_offset': optimal_vertical_offset,
+            'optimal_pitch_deg': optimal_pitch_deg,
+            'optimal_yaw_deg': optimal_yaw_deg,
             'is_fully_wrapped': bool(record_dict.get('is_fully_wrapped', 0)),
             'meets_direction_constraints': bool(record_dict.get('meets_direction_constraints', 0)),
             'optimization_algorithm': 'ga',
@@ -1219,6 +1246,175 @@ def _compute_preview_data(record_id: int) -> bytes:
         candidate_vertices, candidate_faces,
         metadata,
     )
+
+
+# ── 手动位姿试探（渲染视图方向键验证用）──────────────────────────────
+# 缓存记录的网格/位姿/采样点，方向键偏移后用后端精确 BVH 口径实时回评包裹率。
+# 采样为鞋模顶点步长口径（与外点云一致）；业务最终指标仍是 5000 面积采样，
+# 试探只看"相对基线的增减"，两口径下 Δ 方向一致。
+_probe_states = {}
+_probe_states_lock = threading.Lock()
+_PROBE_CACHE_MAX = 2
+
+
+def _get_probe_state(record_id: int) -> dict:
+    with _probe_states_lock:
+        st = _probe_states.get(record_id)
+        if st is not None:
+            st['ts'] = _time.time()
+            return st
+
+    import math
+    conn = sqlite3.connect(str(DB_PATH))
+    c = conn.cursor()
+    c.execute('''
+        SELECT m.*, s.file_path as shoe_path, b.file_path as blank_path
+        FROM match_records m
+        LEFT JOIN shoes s ON m.shoe_id = s.id
+        LEFT JOIN blanks b ON m.blank_id = b.id
+        WHERE m.id = ?
+    ''', (record_id,))
+    record = c.fetchone()
+    if not record:
+        conn.close()
+        raise ValueError('记录不存在')
+    record_dict = dict(zip([col[0] for col in c.description], record))
+    result_data = json.loads(record_dict.get('result_data', '{}'))
+    conn.close()
+
+    target_vertices, target_faces = load_mesh_file(
+        str(record_dict['shoe_path']), mesh_quality='high')
+    candidate_vertices, candidate_faces = load_mesh_file(
+        str(record_dict['blank_path']), mesh_quality='high')
+
+    # 鞋模对齐（与 _compute_preview_data 同一套位姿数学）
+    target_center = np.mean(target_vertices, axis=0)
+    pretransform = result_data.get('target_pretransform')
+    if pretransform:
+        M_pre = np.asarray(pretransform, dtype=float).reshape(4, 4)
+        aligned = target_vertices @ M_pre[:3, :3].T + M_pre[:3, 3]
+    else:
+        R_align = compute_alignment_rotation(
+            target_vertices, target_faces,
+            candidate_vertices, candidate_faces, mesh_matcher)
+        aligned = (R_align @ (target_vertices - target_center).T).T + target_center
+
+    lon = _tf_normalize(np.array(mesh_matcher.MeshMatcher.compute_longitudinal_axis(
+        candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()), dtype=float))
+    ver = _tf_normalize(np.array(mesh_matcher.MeshMatcher.compute_vertical_axis(
+        candidate_vertices.flatten().tolist(), candidate_faces.flatten().tolist()), dtype=float))
+    lat = _tf_normalize(np.cross(lon, ver))
+    cand_center = np.mean(candidate_vertices, axis=0)
+
+    # 渲染帧 = 候选原始坐标系：前端对鞋模应用 GA 变换 M 的逆（粗胚不动），
+    # 试探采样点必须与显示坐标一致 → 同样施加 M⁻¹
+    R_roll = rodrigues_rotation(lon, math.radians(record_dict.get('optimal_rotation_angle_deg', 0.0) or 0.0))
+    R_pitch = rodrigues_rotation(lat, math.radians(float(result_data.get('optimal_pitch_deg', 0.0) or 0.0)))
+    R_yaw = rodrigues_rotation(ver, math.radians(float(result_data.get('optimal_yaw_deg', 0.0) or 0.0)))
+    R_ga = R_yaw @ R_pitch @ R_roll
+    t_ga = (lon * (record_dict.get('optimal_translation', 0.0) or 0.0)
+            + lat * (record_dict.get('optimal_lateral_offset', 0.0) or 0.0)
+            + ver * float(result_data.get('optimal_vertical_offset', 0.0) or 0.0))
+
+    # 采样口径与最终指标一致：面积均匀表面采样（固定种子，确定性）。
+    # 顶点步长采样在密度不均的扫描网格上会超权偏差区块（tc5 实测读数低 ~1.4pp），
+    # 曾导致 HUD 与面板"包裹率"同屏不一致。trimesh 不可用时回退顶点步长并标注。
+    sampling_mode = 'area'
+    try:
+        import trimesh as _trimesh
+        _mesh_t = _trimesh.Trimesh(vertices=aligned, faces=target_faces, process=False)
+        _pts, _ = _trimesh.sample.sample_surface(_mesh_t, 8000, seed=20260712)
+        samples = np.asarray(_pts, dtype=np.float64)
+    except Exception:
+        sampling_mode = 'vertex'
+        step = max(1, len(aligned) // 8000)
+        samples = np.array(aligned[::step][:8000], dtype=np.float64)
+    samples = (samples - cand_center - t_ga) @ R_ga + cand_center  # M⁻¹·p = Rᵀ(p−c−t)+c；右乘 R 即乘 Rᵀ 的转置写法
+    samples = np.ascontiguousarray(samples)
+
+    matcher_inst = mesh_matcher.MeshMatcher()
+    matcher_inst.set_verbose(False)
+    matcher_inst.load_candidate_mesh(candidate_vertices, candidate_faces)
+    tol = 0.1
+    d0 = matcher_inst.signed_distance_batch(samples)
+    stored_wrap = record_dict.get('wrapping_ratio')
+    if stored_wrap is None:
+        stored_wrap = result_data.get('wrapping_ratio')
+    st = {
+        'matcher': matcher_inst,
+        'samples': samples,
+        'L': lon, 'Lat': lat, 'V': ver,
+        # 旋转试探枢轴：鞋模采样点质心（渲染帧）。前端用同一值构建显示矩阵，
+        # 保证"所见即所测"
+        'pivot': samples.mean(axis=0),
+        'tol': tol,
+        'baseline_wrap': float((d0 <= tol).mean()),
+        'stored_wrap': float(stored_wrap) if stored_wrap is not None else None,
+        'sampling': sampling_mode,
+        'ts': _time.time(),
+    }
+    with _probe_states_lock:
+        _probe_states[record_id] = st
+        while len(_probe_states) > _PROBE_CACHE_MAX:
+            oldest = min(_probe_states, key=lambda k: _probe_states[k]['ts'])
+            del _probe_states[oldest]
+    return st
+
+
+@app.route('/api/match/result/<int:record_id>/probe', methods=['GET'])
+def probe_match_result(record_id):
+    """方向键位姿试探：返回偏移后的包裹率与外点（后端精确 BVH 口径）"""
+    if not MATCHER_AVAILABLE or mesh_matcher is None:
+        return jsonify({'error': '匹配模块不可用'}), 503
+    try:
+        dl = float(request.args.get('dl', 0.0))
+        dlat = float(request.args.get('dlat', 0.0))
+        dv = float(request.args.get('dv', 0.0))
+        rl = float(request.args.get('rl', 0.0))      # 绕纵向轴 L 滚转（度）
+        rlat = float(request.args.get('rlat', 0.0))  # 绕横向轴 Lat 俯仰（度）
+        rv = float(request.args.get('rv', 0.0))      # 绕垂直轴 V 偏航（度）
+    except (TypeError, ValueError):
+        return jsonify({'error': '偏移/旋转参数必须是数字'}), 400
+    if not all(math.isfinite(x) for x in (dl, dlat, dv, rl, rlat, rv)):
+        return jsonify({'error': '偏移/旋转参数必须是有限数字'}), 400
+    if max(abs(dl), abs(dlat), abs(dv)) > 200:
+        return jsonify({'error': '偏移超出 ±200mm 限制'}), 400
+    if max(abs(rl), abs(rlat), abs(rv)) > 45:
+        return jsonify({'error': '旋转超出 ±45° 限制'}), 400
+    try:
+        st = _get_probe_state(record_id)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+
+    pts = st['samples']
+    if rl or rlat or rv:
+        # 与算法/前端同一约定：R = R_yaw(V)·R_pitch(Lat)·R_roll(L)，绕鞋模质心
+        R = (rodrigues_rotation(st['V'], math.radians(rv))
+             @ rodrigues_rotation(st['Lat'], math.radians(rlat))
+             @ rodrigues_rotation(st['L'], math.radians(rl)))
+        pts = (pts - st['pivot']) @ R.T + st['pivot']
+    pts = pts + st['L'] * dl + st['Lat'] * dlat + st['V'] * dv
+    d = st['matcher'].signed_distance_batch(np.ascontiguousarray(pts))
+    tol = st['tol']
+    outside = d > tol
+    idx = np.where(outside)[0]
+    if len(idx) > 1500:
+        idx = idx[np.linspace(0, len(idx) - 1, 1500).astype(int)]
+    pack = np.column_stack([pts[idx], d[idx]])
+    return jsonify({
+        'wrap': float((d <= tol).mean()),
+        'baseline_wrap': st['baseline_wrap'],
+        'stored_wrap': st['stored_wrap'],
+        'sampling': st['sampling'],
+        'outside_count': int(outside.sum()),
+        'sample_count': int(len(d)),
+        'tolerance_mm': tol,
+        'offsets': {'dl': dl, 'dlat': dlat, 'dv': dv},
+        'rotations': {'rl': rl, 'rlat': rlat, 'rv': rv},
+        'axes': {'L': st['L'].tolist(), 'Lat': st['Lat'].tolist(), 'V': st['V'].tolist()},
+        'pivot': st['pivot'].tolist(),
+        'outside_points': np.round(pack, 3).tolist(),
+    })
 
 
 @app.route('/api/match/result/<int:record_id>/preview', methods=['GET'])
